@@ -9,6 +9,9 @@ const crypto = require('crypto');
 const { createTray, notify } = require('./tray');
 const build = require('./build');
 const { createAccount, deriveSite, normalizeSignalUrl } = require('./account');
+const tree = require('./tree');
+const folder = require('./folder');
+const { createRemoteStore } = require('./remote');
 
 const APP_ID = 'eu.wiest-lab.friendsshare';
 // the matchmaking address; the website is at the same origin (see deriveSite)
@@ -60,6 +63,10 @@ const startHidden = process.argv.includes('--hidden');
 
 let configFile;
 let config = { shares: [], settings: {} };
+// the friends' copies of the owners' file lists, one file each (see remote.js)
+let remoteStore;
+// listings of folders, kept for a few seconds so that many requests cost one walk (see folder.js)
+const lister = folder.createLister();
 let win = null;
 let tray = null;
 // true once the app is really going away, so closing the window is no longer turned into hiding it
@@ -99,6 +106,13 @@ function loadConfig() {
   const saved = config.settings && typeof config.settings === 'object' ? config.settings : {};
   config.settings = { tray: saved.tray !== false, autostart: saved.autostart === true };
   if (typeof saved.baseDir === 'string' && path.isAbsolute(saved.baseDir)) config.settings.baseDir = saved.baseDir;
+
+  // The lists of the owners' files used to live in config.json, which is rewritten on every change.
+  // They have a place of their own now; the old ones move there, and out of config.json, when their
+  // file is written.
+  remoteStore = createRemoteStore(path.join(app.getPath('userData'), 'remote'));
+  remoteStore.tidy();
+  remoteStore.migrate(config.shares, (share) => config.shares.includes(share)).then((changed) => changed && saveConfig(), () => {});
 }
 
 function saveConfig() {
@@ -116,7 +130,10 @@ function getShare(id) {
 // A new folder in the base folder (see the settings) named after the share, "Name (2)" if that one
 // is taken.
 async function makeShareDir(name) {
-  const clean = String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '').trim().slice(0, 80) || 'Shared folder';
+  let clean = String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '').trim().slice(0, 80).replace(/[. ]+$/, '') || 'Shared folder';
+  // The name comes from the owner's app, which may be hostile: a device name such as CON or NUL is
+  // not a name Windows can give a folder.
+  if (tree.unsafeName(clean)) clean = `_${clean}`;
   const baseDir = getBaseDir();
   try {
     await fsp.mkdir(baseDir, { recursive: true });
@@ -147,28 +164,16 @@ function resolveIn(dir, rel) {
   return full;
 }
 
-const PART_SUFFIX = '.fspart';
+const PART_SUFFIX = tree.PART_SUFFIX;
 
-async function listFiles(dir) {
-  const files = [];
-  async function walk(sub) {
-    let entries;
-    try {
-      entries = await fsp.readdir(path.join(dir, sub), { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const rel = sub ? `${sub}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) await walk(rel);
-      else if (entry.isFile() && !entry.name.endsWith(PART_SUFFIX)) {
-        const st = await fsp.stat(path.join(dir, rel)).catch(() => null);
-        if (st) files.push({ path: rel, size: st.size, mtime: Math.floor(st.mtimeMs) });
-      }
-    }
-  }
-  if (dir) await walk('');
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+// What went wrong on the friend's disk, as an error the window can act on (see TaggedError): "disk"
+// ends the whole sync, "local" costs only the file at hand. Errors that are not about the disk
+// pass as they are.
+function diskError(err) {
+  if (err instanceof folder.TaggedError) return err;
+  if (/^(ENOSPC|EDQUOT)$/.test(err.code)) return new folder.TaggedError('disk', 'Not enough space on this disk');
+  if (typeof err.code === 'string' && /^(E[A-Z]+|UNKNOWN)$/.test(err.code)) return new folder.TaggedError('local', `The file cannot be written on this PC (${err.code})`);
+  return err;
 }
 
 // ---- settings ----
@@ -234,7 +239,8 @@ function assertRoom() {
 
 const api = {
   'state:get': () => ({
-    shares: config.shares,
+    // the owners' file lists are not part of it (see remote.js): the window asks for the one it shows
+    shares: config.shares.map(({ remote, ...share }) => share),
     baseDir: getBaseDir(),
     settings: publicSettings(),
     canAutostart: !!portableExe,
@@ -310,10 +316,13 @@ const api = {
   },
 
   // A sync that downloaded something finished. Worth a notification only if nobody can see the window.
-  'sync:done': (name, downloaded) => {
+  'sync:done': (name, downloaded, skipped) => {
     downloaded = Number(downloaded);
+    skipped = Number(skipped) || 0;
     if (!(downloaded > 0) || (win && win.isVisible() && !win.isMinimized())) return;
-    notify('FriendsShare', `${String(name).slice(0, 100)} is up to date: ${downloaded} file${downloaded === 1 ? '' : 's'} downloaded`, showWindow);
+    const files = `${downloaded} file${downloaded === 1 ? '' : 's'} downloaded`;
+    // a sync that left files out is not "up to date"
+    notify('FriendsShare', `${String(name).slice(0, 100)} ${skipped > 0 ? `synced: ${files}, ${skipped} could not be downloaded` : `is up to date: ${files}`}`, showWindow);
   },
 
   'share:create': async (name) => {
@@ -338,6 +347,28 @@ const api = {
     const st = await fsp.stat(dir).catch(() => null);
     if (!st || !st.isDirectory()) throw new Error('That is not a folder');
     if (config.shares.some((s) => s.dir && samePath(s.dir, dir))) throw new Error('That folder is already in your list');
+    // folders that would show far more than anybody means to share
+    const why = folder.unsafeToShare(dir, {
+      home: app.getPath('home'),
+      windir: process.env.SystemRoot || process.env.windir,
+      userData: app.getPath('userData'),
+      baseDir: getBaseDir(),
+    });
+    if (why) throw new Error(why);
+    // A huge folder is probably not what the person meant, and listing it takes a while.
+    if ((await folder.countFiles(dir, folder.MANY_FILES)) > folder.MANY_FILES) {
+      const answer = await dialog.showMessageBox(win, {
+        type: 'question',
+        title: 'Share this folder?',
+        message: `This folder holds more than ${folder.MANY_FILES.toLocaleString('en-US')} files.`,
+        detail: `Friends will be able to see and download every file in "${path.basename(dir)}", and listing them takes a while. Share it anyway?`,
+        buttons: ['Share it', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (answer.response !== 0) return null;
+    }
     const share = { id: crypto.randomUUID(), role: 'host', name: path.basename(dir), dir, code: null, createdAt: Date.now() };
     config.shares.push(share);
     saveConfig();
@@ -377,21 +408,32 @@ const api = {
     }
     if (typeof info.expiresAt === 'number') share.expiresAt = info.expiresAt;
     if (typeof info.lastSync === 'number') share.lastSync = info.lastSync;
-    // the download choice: last known remote list, paths the friend unchecked, and whether they
-    // have started a download (before that, syncs only fetch the list)
-    if (Array.isArray(info.remote)) {
-      share.remote = info.remote.map((f) => ({ path: String(f.path), size: Number(f.size), mtime: Number(f.mtime) }));
-    }
+    // the download choice: paths the friend does not want (files, or whole folders with a "/" at
+    // the end, see tree.js), and whether they have started a download (before that, syncs only
+    // fetch the list)
     if (Array.isArray(info.excluded)) share.excluded = [...new Set(info.excluded.map(String))];
     if (typeof info.chosen === 'boolean') share.chosen = info.chosen;
     saveConfig();
+    // The owner's file list is big, so it is not part of config.json: it gets a file of its own
+    // (remote.js). Not being able to keep it, a full disk say, is no reason to fail the sync: the
+    // window has the list, and the next sync fetches it again.
+    if (Array.isArray(info.remote)) await remoteStore.write(id, info.remote).catch(() => {});
     return share;
+  },
+
+  // The friend's copy of the owner's file list for the folder the window is showing.
+  // -> { at, files: [{ path, size, mtime }] }, or null when there is none yet
+  'share:remote': (id) => {
+    getShare(id);
+    return remoteStore.read(id);
   },
 
   // Forgets the share. The files stay on disk.
   'share:remove': (id) => {
     config.shares = config.shares.filter((s) => s.id !== id);
     saveConfig();
+    lister.invalidate(id);
+    remoteStore.remove(id).catch(() => {});
   },
 
   'share:open': async (id) => {
@@ -400,7 +442,10 @@ const api = {
     if (share.dir && (await shell.openPath(share.dir))) throw new Error('Could not open the folder. Was it moved or deleted?');
   },
 
-  'share:files': (id) => listFiles(getShare(id).dir),
+  // The files in a folder -> { files: [{ path, size, mtime }], missing: null | 'missing' | 'denied' }.
+  // `missing` says the folder itself cannot be read, which is not the same as an empty folder. A
+  // listing is reused for a few seconds; opts.fresh asks for a new one.
+  'share:files': (id, opts) => lister.list(id, getShare(id).dir, { fresh: !!(opts && opts.fresh) }),
 
   'share:pick': async (id) => {
     const res = await dialog.showOpenDialog(win, { title: 'Add files', properties: ['openFile', 'multiSelections'] });
@@ -413,22 +458,42 @@ const api = {
     const share = getShare(id);
     if (share.role !== 'host') throw new Error('You can only add files to your own folders');
     let count = 0;
-    for (const src of paths) {
-      const dest = path.join(share.dir, path.basename(src));
-      if (path.resolve(src) === dest) continue;
-      await fsp.cp(src, dest, { recursive: true, force: true });
-      count++;
+    try {
+      for (const src of paths) {
+        const dest = path.join(share.dir, path.basename(src));
+        if (path.resolve(src) === dest) continue;
+        await fsp.cp(src, dest, { recursive: true, force: true });
+        count++;
+      }
+    } finally {
+      lister.invalidate(id);
     }
     return count;
   },
 
+  // A friend asked for this file. It has to be a real file inside the shared folder; resolveIn
+  // only looks at the text of the path, folder.realFile at where it leads. The errors are tagged
+  // (see TaggedError): "gone" is the folder itself, "read" is only this file.
   'file:openRead': async (id, rel) => {
     const share = getShare(id);
     if (share.role !== 'host') throw new Error('Not shared');
-    const fh = await fsp.open(resolveIn(share.dir, rel), 'r');
-    const h = nextHandle++;
-    handles.set(h, { fh });
-    return { h, size: (await fh.stat()).size };
+    const real = await folder.realFile(share.dir, rel);
+    let fh;
+    try {
+      fh = await fsp.open(real, 'r');
+    } catch (err) {
+      throw new folder.TaggedError('read', `The file cannot be opened (${err.code || err.message})`);
+    }
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) throw new folder.TaggedError('read', 'That is not a file');
+      const h = nextHandle++;
+      handles.set(h, { fh });
+      return { h, size: st.size };
+    } catch (err) {
+      await fh.close().catch(() => {});
+      throw err;
+    }
   },
 
   'file:read': async (h, offset, length) => {
@@ -439,42 +504,69 @@ const api = {
 
   // Downloads go to "<file>.<size>-<mtime>.fspart" first. If such a part already exists the
   // download continues where it stopped; a changed file gets a different part name.
+  // The errors are tagged (see diskError): "name" and "local" cost only this file, "disk" is the end
+  // of the sync.
   'file:openWrite': async (id, rel, size, mtime) => {
     const share = getShare(id);
     if (share.role !== 'guest' || !share.dir) throw new Error('Not a friend folder');
+    // The owner's app chooses these names and is only as trustworthy as the person who runs it. A
+    // name that is trouble on Windows (CON, "name:stream", a trailing dot, "..") is not written.
+    const why = tree.unsafePath(rel);
+    if (why) throw new folder.TaggedError('name', `Not written: ${why}`);
+    if (!Number.isSafeInteger(size) || size < 0 || !Number.isFinite(mtime)) throw new Error('Bad size or time');
     const final = resolveIn(share.dir, rel);
-    const part = `${final}.${Number(size)}-${Number(mtime)}${PART_SUFFIX}`;
-    await fsp.mkdir(path.dirname(final), { recursive: true });
-    const fh = await fsp.open(part, 'a');
-    let offset = (await fh.stat()).size;
-    if (offset > size) {
-      await fh.truncate(0);
-      offset = 0;
+    const part = `${final}.${size}-${mtime}${PART_SUFFIX}`;
+    let fh;
+    try {
+      await fsp.mkdir(path.dirname(final), { recursive: true });
+      fh = await fsp.open(part, 'a');
+      let offset = (await fh.stat()).size;
+      if (offset > size) {
+        await fh.truncate(0);
+        offset = 0;
+      }
+      const h = nextHandle++;
+      handles.set(h, { id, fh, final, part, mtime });
+      return { h, offset };
+    } catch (err) {
+      if (fh) await fh.close().catch(() => {});
+      throw diskError(err);
     }
-    const h = nextHandle++;
-    handles.set(h, { fh, final, part, mtime: Number(mtime) });
-    return { h, offset };
   },
 
   'file:write': async (h, data) => {
-    await handles.get(h).fh.appendFile(data instanceof ArrayBuffer ? Buffer.from(data) : data);
+    try {
+      await handles.get(h).fh.appendFile(data instanceof ArrayBuffer ? Buffer.from(data) : data);
+    } catch (err) {
+      throw diskError(err);
+    }
   },
 
   // Download complete: the part becomes the real file and takes the original's modified time,
   // which is how the next sync knows it is up to date.
   'file:finish': async (h) => {
-    const { fh, final, part, mtime } = handles.get(h);
+    const { id, fh, final, part, mtime } = handles.get(h);
     handles.delete(h);
-    await fh.close();
-    await fsp.rename(part, final);
-    await fsp.utimes(final, mtime / 1000, mtime / 1000);
+    try {
+      await fh.close();
+      await fsp.rename(part, final);
+      await fsp.utimes(final, mtime / 1000, mtime / 1000);
+    } catch (err) {
+      throw diskError(err);
+    } finally {
+      lister.invalidate(id);
+    }
   },
 
-  'file:close': async (h) => {
+  // dropEmpty: a download that is given up before the first byte arrived (the owner could not read
+  // the file) does not leave an empty part behind. What did arrive stays, to go on from.
+  'file:close': async (h, dropEmpty) => {
     const entry = handles.get(h);
     if (!entry) return;
     handles.delete(h);
+    const empty = dropEmpty && entry.part && (await entry.fh.stat().catch(() => null))?.size === 0;
     await entry.fh.close().catch(() => {});
+    if (empty) await fsp.rm(entry.part, { force: true }).catch(() => {});
   },
 };
 

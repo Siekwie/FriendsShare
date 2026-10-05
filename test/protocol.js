@@ -62,7 +62,12 @@ async function fakeMatchmaker(welcome = {}) {
   return fake;
 }
 
-const hostShare = (id, name, code, createdAt) => ({ id, role: 'host', name, dir: path.join(t.tmpRoot, NAME, 'hostfiles', id), code, hostKey: crypto.randomUUID(), createdAt, expiresAt: Date.now() + 86400000 });
+// The folder exists: an owner's folder that is not there says so, in the status line (see files.js)
+const hostShare = (id, name, code, createdAt) => {
+  const dir = path.join(t.tmpRoot, NAME, 'hostfiles', id);
+  fs.mkdirSync(dir, { recursive: true });
+  return { id, role: 'host', name, dir, code, hostKey: crypto.randomUUID(), createdAt, expiresAt: Date.now() + 86400000 };
+};
 const guestShare = (id, code, createdAt) => ({ id, role: 'guest', name: `Share ${code.slice(0, 8)}`, dir: null, code, chosen: true, createdAt });
 const online = (app) => t.waitFor(async () => (await ui(app, "document.querySelector('#conn').dataset.state")) === 'online', 20000, `${app.who} to be online`);
 
@@ -215,6 +220,63 @@ const online = (app) => t.waitFor(async () => (await ui(app, "document.querySele
     // 1 s, 2 s, 4 s: the counter starts over with a welcome, not with an open socket
     t.check(gaps[0] >= 0.8 && gaps[1] >= 1.8 && gaps[2] >= 3.6, `the waits between attempts keep growing (${gaps.map((g) => g.toFixed(1)).join(' s, ')} s)`);
     t.check(fake.connections.every((c) => c.early.length === 0), 'nothing is sent before the hello');
+  });
+
+  await t.scenario('"limit" that has nothing to do with the plan: the folder is not paused, no upgrade, and it is tried again', async (cleanup) => {
+    t.resetDir(path.join(t.tmpRoot, NAME));
+    // a welcome that says there is no limit (Pro, or a server without one)
+    const fake = await fakeMatchmaker({ limit: null });
+    cleanup(() => fake.stop());
+    const codes = { h1: crypto.randomUUID(), h2: crypto.randomUUID() };
+    const room = (id) => t.sha(codes[id]);
+    const now = Date.now();
+    // the server turns the first folder away with "limit" the first time it is asked (an address may only
+    // register 60 new folders an hour, and its table can be full), and takes everything else
+    const refusals = { h1: 1, h2: 0 };
+    fake.onMessage = (conn, m) => {
+      if (m.t !== 'host') return;
+      const id = m.room === room('h1') ? 'h1' : 'h2';
+      if (refusals[id] > 0) {
+        refusals[id]--;
+        fake.send(conn, { t: 'err', room: m.room, code: 'limit' });
+      } else {
+        fake.send(conn, { t: 'hosted', room: m.room });
+      }
+    };
+    const app = await t.startApp({ name: NAME, who: 'app', signal: fake.signalUrl, seed: { shares: [hostShare('h1', 'One', codes.h1, now - 2 * HOUR), hostShare('h2', 'Two', codes.h2, now - HOUR)] } });
+    cleanup(() => app.quit());
+    await app.ready();
+    await online(app);
+    await t.waitFor(async () => (await ui(app, '[...unregistered].join()')) === 'h1', 10000, 'the refusal to be noticed');
+    const hosts = (id) => fake.sent('host', (m) => m.room === room(id)).length;
+    t.check((await ui(app, 'account.limit === null && [...limited].length === 0 && [...paused].length === 0')) === true, 'the plan has no limit, and the folder is not paused');
+    const tags = await ui(app, "[...document.querySelectorAll('#list-host li')].map((li) => li.textContent).join('|')");
+    t.check(/^One.*not registered\|Two$/.test(tags) && (await ui(app, "document.querySelectorAll('#list-host li.paused').length")) === 0, `it is shown as not registered in the list, and as nothing else ("${tags}")`);
+    await ui(app, "select('h1'); 0");
+    const line = await ui(app, "document.querySelector('#status').textContent");
+    t.check(/could not be registered right now/.test(line) && /tries again later/.test(line) && !/upgrade|plan/i.test(line) && (await ui(app, "document.querySelector('#status').className")) === 'hint status error', `its card says it could not be registered right now and is tried again later ("${line}")`);
+    t.check((await ui(app, "!document.querySelector('#paused-card') && !document.querySelector('#btn-paused-upgrade') && !document.querySelector('#dlg-limit[open]')")) === true, 'with no "Paused", and no "Upgrade to Pro"');
+    // it is not asked again by itself every time something changes
+    await ui(app, 'reload()');
+    await t.sleep(1500);
+    t.check(hosts('h1') === 1 && hosts('h2') === 1, 'the server is not asked again just because the window drew again');
+    // after a while
+    t.check((await ui(app, 'RETRY_REGISTER_EVERY')) === 600000, 'it is asked again every 10 minutes');
+    await ui(app, 'retryUnregistered(); 0');
+    await t.waitFor(() => hosts('h1') === 2, 5000, 'the folder to be registered again');
+    await t.waitFor(async () => (await ui(app, '[...unregistered].length')) === 0, 5000, 'the folder to count as registered');
+    t.check(hosts('h2') === 1 && !/not registered/.test(await ui(app, "document.querySelector('#list-host').textContent")) && (await ui(app, "document.querySelector('#status').className")) === 'hint status', 'and when the server takes it, the list and the card say nothing about it any more');
+    // on the next connection
+    refusals.h1 = 1;
+    await ui(app, 'p2p.reconnect()');
+    await t.waitFor(async () => (await ui(app, '[...unregistered].join()')) === 'h1', 10000, 'the refusal on the new connection');
+    t.check(fake.connections.length === 2 && hosts('h1') === 3, 'a new connection registers the folder again, and is refused again');
+    await ui(app, 'p2p.reconnect()');
+    await t.waitFor(() => hosts('h1') === 4, 10000, 'the next connection to register it');
+    await t.waitFor(async () => (await ui(app, '[...unregistered].length')) === 0, 5000, 'the folder to count as registered');
+    const listText = await ui(app, "document.querySelector('#list-host').textContent");
+    t.check(fake.connections.length === 3 && !/not registered/.test(listText), `and the next connection gets it registered, without anybody doing anything (${fake.connections.length} connections, list "${listText}")`);
+    t.check(app.dialogs.length === 0, 'no dialog was opened');
   });
   t.finish();
 })();

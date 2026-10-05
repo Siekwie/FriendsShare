@@ -74,10 +74,11 @@ t.scenario('The free plan holds one folder: the older one syncs, the newer one i
   const refused = await ui(friend, `api.joinShare('${crypto.randomUUID()}').then(() => 'added', (err) => errorText(err))`);
   t.check(/holds 1 folder at a time/.test(refused), 'adding a code is refused in the main process too');
 
-  // The window thinks there is no limit (a welcome that was out of date): the server says no, and the
-  // folders it refused are paused again, for both kinds. (The owner's extra folder was not announced
-  // before; the friend's newer folder never asked.)
-  await ui(ownerB, "account = { ...account, limit: null }; refreshPaused(); 0");
+  // The window thinks the limit is higher than it is (a welcome that was out of date): the server says
+  // no, and the folders it refused are paused again, for both kinds. (The owner's extra folder was not
+  // announced before; the friend's newer folder never asked.) A window that thinks there is no limit
+  // at all reads such a refusal as something that has nothing to do with the plan: see protocol.js.
+  await ui(ownerB, "account = { ...account, limit: 5 }; refreshPaused(); 0");
   await t.sleep(2500);
   t.check((await ui(ownerB, "[...limited].join()")) === 'extra' && (await ui(ownerB, "[...paused].join()")) === 'extra', 'a folder of your own that the server refuses with "limit" is paused (the answer of the server, not a count of the window)');
   t.check((await server.stats()).hosted_rooms === 2, 'and is not registered');

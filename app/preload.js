@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   removeShare: call('share:remove'),
   openShare: call('share:open'),
   listFiles: call('share:files'),
+  // the friend's copy of the owner's file list for one folder (kept apart from the settings)
+  getRemote: call('share:remote'),
   pickFiles: call('share:pick'),
   importPaths: call('share:import'),
   openRead: call('file:openRead'),

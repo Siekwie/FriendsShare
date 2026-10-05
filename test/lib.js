@@ -270,13 +270,95 @@ function devtools(port) {
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
+// ---- files for the tests ----
+
+// Writes files under dir: { 'sub/a.txt': 'text' or a Buffer }
+function writeFiles(dir, files) {
+  for (const [rel, data] of Object.entries(files)) {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, data);
+  }
+}
+
+// What is under dir: { 'sub/a.txt': SHA-256 of the content } for every file, unfinished downloads
+// ("...fspart") included. A folder that is not there has nothing.
+function readTree(dir) {
+  const out = {};
+  const walk = (sub) => {
+    for (const entry of fs.readdirSync(path.join(dir, sub), { withFileTypes: true })) {
+      const rel = sub ? `${sub}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.isFile()) out[rel] = sha(fs.readFileSync(path.join(dir, rel)));
+    }
+  };
+  if (fs.existsSync(dir)) walk('');
+  return out;
+}
+
+// What the person running the tests may not do with a file: read it (the owner's app then cannot
+// open it, like a file that is open in Word). Always undo it again, in a cleanup.
+const whoami = () => process.env.USERNAME || require('os').userInfo().username;
+function denyRead(file) {
+  const res = spawnSync('icacls', [file, '/deny', `${whoami()}:R`], { encoding: 'utf8' });
+  if (res.status !== 0) throw new Error(`icacls could not deny reading ${file}: ${res.stdout}${res.stderr}`);
+}
+const allowRead = (file) => spawnSync('icacls', [file, '/remove:d', whoami()], { encoding: 'utf8' });
+// Takes back every denial under a folder, so that it can be deleted (a test that stopped half way)
+const resetRights = (dir) => fs.existsSync(dir) && spawnSync('icacls', [dir, '/reset', '/T', '/C', '/Q'], { encoding: 'utf8' });
+
+// A directory junction, as "mklink /J" makes it: link inside the shared folder, target elsewhere
+function junction(link, target) {
+  const res = spawnSync('cmd.exe', ['/c', 'mklink', '/J', link, target], { encoding: 'utf8' });
+  if (res.status !== 0) throw new Error(`mklink /J failed: ${res.stdout}${res.stderr}`);
+}
+
+// ---- other versions of the app ----
+
+// The app files of a version in the git history (a tag such as v1.2.0), put into a folder of their
+// own that startApp can run: { appDir }. For tests of how this version gets along with an older one.
+function releaseApp(ref, name) {
+  const dir = resetDir(path.join(tmpRoot, name, `app-${ref}`));
+  const git = (...args) => {
+    const res = spawnSync('git', args, { cwd: root, maxBuffer: 64 * 1024 * 1024 });
+    if (res.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+    return res.stdout;
+  };
+  const names = String(git('ls-tree', '-r', '--name-only', ref, 'app')).split('\n').filter(Boolean);
+  for (const file of [...names, 'package.json']) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), git('show', `${ref}:${file}`));
+  }
+  return dir;
+}
+
+// A copy of the app in this folder with some text replaced, to play a misbehaving peer: patches is a
+// list of [file under app/, text, replacement]. A text that is not there is an error, so that a
+// change in the app cannot quietly turn the test into one that tests nothing.
+function patchedApp(name, patches) {
+  const dir = resetDir(path.join(tmpRoot, name, 'app-patched'));
+  fs.cpSync(path.join(root, 'app'), path.join(dir, 'app'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'package.json'), path.join(dir, 'package.json'));
+  for (const [file, from, to] of patches) {
+    const target = path.join(dir, 'app', file);
+    const text = fs.readFileSync(target, 'utf8');
+    if (!text.includes(from)) throw new Error(`patch: "${from.slice(0, 60)}" is not in app/${file}`);
+    fs.writeFileSync(target, text.replace(from, () => to));
+  }
+  return dir;
+}
+
 // Starts the app from source with its own profile directory (FS_HOME), hidden (as a startup entry
 // would), looking at the given matchmaking address. seed is what config.json starts with. The tray
 // option is off, so that closing the window ends the app: that is the graceful way to stop it.
-async function startApp({ name, who, signal, seed = {}, env = {}, args = [] }) {
+// appDir: another copy of the app to run (see releaseApp and patchedApp), not the one in this folder.
+async function startApp({ name, who, signal, seed = {}, env = {}, args = [], appDir = root }) {
   // a syntax error in the app would make Electron show its error box before anything can stop it
-  for (const file of ['main.js', 'build.js', 'account.js', 'preload.js', 'tray.js', 'renderer/p2p.js', 'renderer/app.js']) {
-    const check = spawnSync(process.execPath, ['--check', path.join(root, 'app', file)], { encoding: 'utf8' });
+  for (const file of ['main.js', 'build.js', 'account.js', 'preload.js', 'tray.js', 'tree.js', 'folder.js', 'remote.js', 'renderer/p2p.js', 'renderer/app.js']) {
+    const target = path.join(appDir, 'app', file);
+    // an older version does not have all of these
+    if (!fs.existsSync(target)) continue;
+    const check = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' });
     if (check.status !== 0) throw new Error(`app/${file} does not parse: ${check.stderr}`);
   }
   const home = path.join(tmpRoot, name, who);
@@ -285,20 +367,33 @@ async function startApp({ name, who, signal, seed = {}, env = {}, args = [] }) {
   fs.mkdirSync(userdata, { recursive: true });
   fs.writeFileSync(path.join(userdata, 'config.json'), JSON.stringify({ shares: [], ...seed, settings: { tray: false, ...(seed.settings || {}) } }));
   const debugPort = await freePort();
-  // guard.js: no error box and no notification, whatever happens. --user-data-dir: everything the
-  // instance writes, from its first moment on, goes into its own home and nowhere else.
+  // guard.js: no error box, no notification and no dialog, whatever happens (the ones the app opens
+  // on purpose are answered from dialogs.json, see below). --user-data-dir: everything the instance
+  // writes, from its first moment on, goes into its own home and nowhere else.
   const guard = path.join(__dirname, 'guard.js').replace(/\\/g, '/');
-  const fullEnv = { ...process.env, NODE_OPTIONS: `--require=${guard}`, FS_HOME: home, FS_SIGNAL: signal, ...env };
+  const dialogFile = path.join(home, 'dialogs.json');
+  const fullEnv = { ...process.env, NODE_OPTIONS: `--require=${guard}`, FS_HOME: home, FS_SIGNAL: signal, FS_TEST_DIALOGS: dialogFile, ...env };
   delete fullEnv.ELECTRON_RUN_AS_NODE;
-  const child = spawnTracked(require('electron'), ['.', '--hidden', `--user-data-dir=${userdata}`, `--remote-debugging-port=${debugPort}`, ...args], { cwd: root, env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawnTracked(require('electron'), [appDir === root ? '.' : appDir, '--hidden', `--user-data-dir=${userdata}`, `--remote-debugging-port=${debugPort}`, ...args], { cwd: appDir, env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   const dev = devtools(debugPort);
   const instance = {
     who,
     home,
+    userdata,
     child,
     dialogs: dev.dialogs,
     eval: (expression) => dev.eval(expression),
+    // The native dialogs of the app are not shown (see guard.js). This says what the next ones
+    // answer: { open: [[folder], null], box: [0] }; and dialogLog() is what was asked so far.
+    answer: (queue) => fs.writeFileSync(dialogFile, JSON.stringify(queue)),
+    dialogLog: () => (fs.existsSync(`${dialogFile}.log`) ? fs.readFileSync(`${dialogFile}.log`, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []),
+    output: () => child.output.join(''),
     config: () => readJson(path.join(userdata, 'config.json')),
+    // the friend's copy of the owner's file list (it is not in config.json, see app/remote.js)
+    remote: (id) => {
+      const file = path.join(userdata, 'remote', `${id}.json`);
+      return fs.existsSync(file) ? readJson(file) : null;
+    },
     // the window has loaded and has started
     ready: () => waitFor(() => dev.eval('typeof state === "object" && typeof p2p === "object"').catch(() => false), 30000, `${who} to start`),
     async quit() {
@@ -378,6 +473,14 @@ module.exports = {
   startServer,
   startInProcessServer,
   makeBrowser,
+  writeFiles,
+  readTree,
+  denyRead,
+  allowRead,
+  resetRights,
+  junction,
+  releaseApp,
+  patchedApp,
   startApp,
   devtools,
   readJson,

@@ -1,10 +1,16 @@
 // The window: list of folders on the left, the selected one on the right.
 const EXPIRY_CHOICES = [1, 7, 30, 90, 365];
 const RESYNC_EVERY = 10 * 60 * 1000;
+// a folder the server could not register for reasons that are not about the plan is tried again this often
+const RETRY_REGISTER_EVERY = 10 * 60 * 1000;
+// Coming back to the window reads the folder in view again, but not more often than this: on a folder
+// of thousands of files that is a walk through all of them.
+const FOCUS_REFRESH_AFTER = 15 * 1000;
 
 let state = { shares: [], settings: { baseDir: '', tray: true, autostart: false } };
 let selectedId = null;
-// guest share id -> { kind: 'syncing' | 'ok' | 'error', text, done, total }
+// guest share id -> { kind: 'syncing' | 'ok' | 'warn' | 'error', text, done, total, skipped }
+// ('warn' is a sync that left some files out, listed in `skipped`)
 const status = new Map();
 // host share id -> { friends, sent }
 const hostInfo = new Map();
@@ -24,6 +30,27 @@ const limited = new Set();
 const blockedGuests = new Set();
 // Own folders whose code was blocked: id -> that code. A new code is a new room, so it works again.
 const blockedHosts = new Map();
+// Own folders that the server did not register although the plan has room (an address can only
+// register 60 new folders an hour, and the server's table can be full). Tried again later.
+const unregistered = new Set();
+
+// The file list of the folder in view, as the tree shows it: { id, role, kind: 'choice' | 'plain',
+// built (see tree.build), missing }. 'choice' is a friend's folder with the owner's list, where each
+// file and folder has a checkbox. Replaced whenever the folder is read again.
+let view = null;
+// when the folder in view was last read from the disk
+let listedAt = 0;
+let refreshCount = 0;
+// the window was drawn again while the list had the keyboard focus: the next list takes it
+let keepTreeFocus = false;
+// share id -> which folders of its tree are open, how many entries of each are shown (see tree.rows),
+// and the row with the keyboard focus. Outlives the tree, which is built again whenever the window draws.
+const treeState = new Map();
+// share id -> the friend's copy of the owner's file list. The main process keeps these in files of
+// their own; the window asks for the one it needs, and gets a new one with every sync.
+const remoteLists = new Map();
+// notes of the folder in view whose list of files is open: "<share id>:<note>"
+const openNotes = new Set();
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -65,15 +92,36 @@ async function reload() {
   state = await api.getState();
   account = state.account;
   for (const id of limited) if (!state.shares.some((s) => s.id === id)) limited.delete(id);
+  for (const id of unregistered) if (!state.shares.some((s) => s.id === id)) unregistered.delete(id);
   if (!selected()) selectedId = null;
   refreshPaused();
   renderSidebar();
   renderDetail();
   renderAccount();
+  watchExpiry();
+}
+
+// A code that runs out while the window is open: the card says "expired" by itself, and the folder
+// stops being served at that moment, not at the next round.
+let expiryTimer = null;
+function watchExpiry() {
+  clearTimeout(expiryTimer);
+  const next = state.shares.filter((s) => s.expiresAt > Date.now()).sort((a, b) => a.expiresAt - b.expiresAt)[0];
+  if (!next) return;
+  // a timer cannot wait longer than about 24 days; a longer wait is cut in pieces
+  expiryTimer = setTimeout(() => {
+    if (isExpired(next)) {
+      p2p.setHostShares(activeShares());
+      if (selectedId === next.id) renderCard();
+    }
+    watchExpiry();
+  }, Math.min(next.expiresAt - Date.now() + 100, 2 ** 31 - 1));
 }
 
 function select(id) {
   selectedId = id;
+  // the window only holds the owner's list of the folder it shows (the rest is in the profile)
+  for (const other of [...remoteLists.keys()]) if (other !== id) remoteLists.delete(other);
   renderSidebar();
   renderDetail();
 }
@@ -124,7 +172,8 @@ function renderSidebar() {
           // apart two folders of the same name, now that one can live anywhere
           el('button', { type: 'button', class: 'item', 'data-share-id': s.id, 'aria-current': s.id === selectedId ? 'true' : false, title: s.dir ? `${s.name}\n${s.dir}` : s.name, onclick: () => select(s.id) },
             el('span', { class: 'name' }, s.name),
-            isPaused(s) && el('span', { class: 'tag' }, 'paused'))));
+            isPaused(s) && el('span', { class: 'tag' }, 'paused'),
+            !isPaused(s) && unregistered.has(s.id) && el('span', { class: 'tag', title: 'The server could not register this folder. It is tried again later.' }, 'not registered'))));
     if (!items.length) items.push(el('li', { class: 'empty' }, role === 'host' ? 'Nothing shared yet' : 'No codes added yet'));
     $(`#list-${role}`).replaceChildren(...items);
   }
@@ -184,13 +233,39 @@ function renderDetail() {
   const filesCard = el('div', { class: 'card' },
     el('div', { class: 'row' },
       el('h2', { class: 'grow', id: 'files-title' }, 'Files'),
-      share.role === 'host' && el('button', { onclick: () => addFiles(share) }, 'Add files')),
+      share.role === 'guest' && el('button', { class: 'small', id: 'btn-selectall', hidden: true, onclick: selectAllOrNone }, 'Select all / none'),
+      share.role === 'host' && el('button', { id: 'btn-add', onclick: () => addFiles(share) }, 'Add files')),
     share.role === 'host' && el('div', { class: 'hint', id: 'import-hint' }, 'Drop files or folders anywhere on this window to copy them into the folder, or put them there yourself.'),
-    el('div', { class: 'files', id: 'files' }));
-  const card = isPaused(share) ? pausedCard(share) : share.role === 'host' ? hostCard(share) : guestCard(share);
-  main.replaceChildren(...[notice, head, card, filesCard].filter(Boolean));
+    el('div', { class: 'hint', id: 'files-note' }),
+    el('div', { class: 'files', id: 'files', role: 'tree', 'aria-label': 'Files' }));
+  // The whole main area is drawn again (after every sync, say): somebody who is moving through the
+  // list with the keyboard keeps their place.
+  const focusedRow = document.activeElement?.closest('#files .node');
+  keepTreeFocus = !!focusedRow;
+  if (focusedRow && view) uiState(view.id).focus = focusedRow.dataset.key;
+  main.replaceChildren(...[notice, head, shareCard(share), filesCard].filter(Boolean));
   renderStatus();
+  wireTree($('#files'));
+  // the list that was shown last is still good enough to start from; it is read again right away
+  if (view && view.id === share.id) renderFiles();
+  else $('#files').replaceChildren(el('div', { class: 'empty-note' }, 'Reading the folder…'));
   refreshFiles();
+}
+
+// The card with the code (or the sync) of a folder, or why it is paused.
+function shareCard(share) {
+  const card = isPaused(share) ? pausedCard(share) : share.role === 'host' ? hostCard(share) : guestCard(share);
+  card.dataset.shareCard = '';
+  return card;
+}
+
+// Draws the card of the folder in view again, and nothing else.
+function renderCard() {
+  const share = selected();
+  const old = $('[data-share-card]');
+  if (!share || !old) return;
+  old.replaceWith(shareCard(share));
+  renderStatus();
 }
 
 // A folder over the limit of the plan: why, and what to do about it.
@@ -244,6 +319,8 @@ function guestCard(share) {
       el('h2', { class: 'grow' }, 'Sync'),
       el('button', { class: 'primary', id: 'btn-sync', onclick: () => syncShare(share.id, { download: true, manual: true }) }, share.chosen ? 'Sync now' : 'Download selected')),
     el('div', { class: 'status', id: 'status' }),
+    // the files that were left out of the last sync, behind a "Show"
+    el('div', { class: 'skipped', id: 'skipped' }),
     el('progress', { id: 'progress', max: 1, value: 0, hidden: true }),
     el('div', { class: 'hint' },
       [share.lastSync && `Last synced ${new Date(share.lastSync).toLocaleString()}.`, share.expiresAt && `Code ${isExpired(share) ? 'expired' : 'valid until'} ${formatDate(share.expiresAt)}.`]
@@ -258,72 +335,360 @@ function renderStatus() {
   if (share.role === 'host') {
     const info = hostInfo.get(share.id);
     const blocked = isBlockedHost(share);
-    line.className = `hint status${blocked ? ' error' : ''}`;
-    line.textContent = blocked
+    const gone = view && view.id === share.id && view.missing;
+    // a problem that keeps friends from the folder says so, whatever else is going on
+    const problem = blocked
       ? `${p2p.message('blocked')} Click New code to share this folder again.`
-      : info?.friends ? `${info.friends === 1 ? 'A friend is' : `${info.friends} friends are`} connected, ${formatBytes(info.sent)} sent.` : '';
+      : unregistered.has(share.id)
+        ? 'This folder could not be registered right now, so friends cannot reach it yet. FriendsShare tries again later.'
+        : gone
+          ? 'Friends cannot download this folder right now, because it cannot be found.'
+          : null;
+    line.className = `hint status${problem ? ' error' : ''}`;
+    // `sent` is everything sent for this folder, to all friends together
+    line.textContent = problem || (info?.friends ? `${info.friends === 1 ? 'A friend is' : `${info.friends} friends are`} connected, ${formatBytes(info.sent)} sent.` : '');
     return;
   }
   const st = status.get(share.id) || { kind: '', text: share.lastSync ? '' : 'Not synced yet.' };
   line.className = `status ${st.kind}`;
   line.textContent = st.text;
+  renderSkipped(share, st);
   $('#btn-sync').disabled = syncing.has(share.id);
   const bar = $('#progress');
   bar.hidden = !(st.kind === 'syncing' && st.total);
   if (st.total) bar.value = st.done / st.total;
 }
 
-async function refreshFiles() {
-  const share = selected();
-  if (!share) return;
-  const files = share.dir ? await api.listFiles(share.id) : [];
-  if (selectedId !== share.id || !$('#files')) return;
-  if (share.role === 'guest' && share.remote?.length) return renderChoice(share, files);
-  const total = files.reduce((sum, f) => sum + f.size, 0);
-  $('#files-title').textContent = files.length ? `Files (${files.length}, ${formatBytes(total)})` : 'Files';
-  $('#files').replaceChildren(
-    ...(files.length
-      ? files.map((f) => el('div', { class: 'file' }, el('span', { title: f.path }, f.path), el('span', {}, formatBytes(f.size))))
-      : [el('div', { class: 'file muted' }, share.role === 'host' ? 'This folder is empty.' : 'Nothing here yet.')]));
+// A small "Show" that opens a list of paths, each with a note: the files that a sync left out, and
+// the files of a friend's folder that cannot be downloaded at all. -> [the button, the list or false],
+// to go after the words that explain them. shown() draws it again after a click.
+function fileNote(id, key, items, shown) {
+  const noteKey = `${id}:${key}`;
+  const open = openNotes.has(noteKey);
+  const list = items.slice(0, 200);
+  return [
+    el('button', { type: 'button', class: 'small', 'aria-expanded': String(open), onclick: () => {
+      openNotes[open ? 'delete' : 'add'](noteKey);
+      shown();
+    } }, open ? 'Hide' : 'Show'),
+    open && el('ul', { class: 'note-files' },
+      ...list.map(({ path, note }) => el('li', {}, el('span', { class: 'path-text', title: path }, path), note && el('span', { class: 'why' }, note))),
+      items.length > list.length && el('li', { class: 'why' }, `and ${items.length - list.length} more`)),
+  ];
 }
 
-// A finished download carries the original's modified time (see p2p.sync).
-const isDownloaded = (remote, mine) => mine && mine.size === remote.size && Math.abs(mine.mtime - remote.mtime) <= 2000;
+const SKIP_NOTES = { read: "could not be read on your friend's PC", changed: 'changed while it was downloading' };
 
-// Friend's folder: the remote files with a checkbox each, then local files the owner no longer has.
-function renderChoice(share, localFiles) {
-  const local = new Map(localFiles.map((f) => [f.path, f]));
-  const excluded = new Set(share.excluded);
-  const remotePaths = new Set(share.remote.map((f) => f.path));
-  const picked = share.remote.filter((f) => !excluded.has(f.path));
-  const pickedSize = picked.reduce((sum, f) => sum + f.size, 0);
+// The files of the last sync that were left out. Only drawn again when something about them changed,
+// because this is called many times a second during a transfer.
+function renderSkipped(share, st) {
+  const box = $('#skipped');
+  const items = st.skipped || [];
+  const signature = `${items.length}|${openNotes.has(`${share.id}:skipped`)}`;
+  if (!box || box.dataset.signature === signature) return;
+  box.dataset.signature = signature;
+  box.replaceChildren(...(items.length
+    ? [el('div', { class: 'note' }, el('span', { class: 'muted' }, 'They are tried again at the next sync. '),
+       ...fileNote(share.id, 'skipped', items.map((s) => ({ path: s.path, note: SKIP_NOTES[s.why] || s.note })), () => {
+         box.dataset.signature = '';
+         renderSkipped(share, st);
+       }))]
+    : []));
+}
 
-  const save = async (paths) => {
-    share.excluded = [...paths];
-    await api.updateShare(share.id, { excluded: share.excluded });
-    refreshFiles();
-  };
-  const toggle = (path, on) => save(on ? [...excluded].filter((p) => p !== path) : [...excluded, path]);
-  // all checked -> uncheck all, otherwise check all; excluded paths that left the list are kept
-  const toggleAll = () => save(picked.length === share.remote.length ? [...excluded, ...remotePaths] : [...excluded].filter((p) => !remotePaths.has(p)));
+// ---- the file list: a tree, for the owner and for the friend ----
+//
+// Folders and files are rows of a tree. The top level is shown, folders are closed, and a folder
+// that is opened draws its entries when it is opened. A folder shows at most tree.PAGE entries at a
+// time and then a "Show more" row, so that a folder of twenty thousand files is as light as a small
+// one. The list is built from the whole folder (or the owner's whole list), but only what is open is
+// ever drawn. A friend's folder has a checkbox on each row, ticked, unticked or (for a folder) mixed.
 
-  const rows = share.remote.map((f) =>
-    el('label', { class: 'file' },
-      el('input', { type: 'checkbox', checked: !excluded.has(f.path), onchange: (e) => toggle(f.path, e.target.checked) }),
-      el('span', { title: f.path }, f.path),
-      el('span', { class: 'done' }, isDownloaded(f, local.get(f.path)) ? 'downloaded' : ''),
-      el('span', {}, formatBytes(f.size))));
-  const extra = localFiles
-    .filter((f) => !remotePaths.has(f.path))
-    .map((f) => el('div', { class: 'file plain' }, el('span', { title: f.path }, f.path), el('span', { class: 'done' }, 'downloaded'), el('span', {}, formatBytes(f.size))));
+// The friend's copy of the owner's file list for a folder, or null when there is none yet.
+async function remoteList(id) {
+  if (!remoteLists.has(id)) {
+    const saved = await api.getRemote(id);
+    if (saved) remoteLists.set(id, saved.files);
+  }
+  return remoteLists.get(id) || null;
+}
 
-  $('#files-title').textContent = `Files (${picked.length} of ${share.remote.length} selected, ${formatBytes(pickedSize)})`;
-  const scroll = $('#files').scrollTop;
-  $('#files').replaceChildren(
-    el('div', { class: 'file selectall' }, el('button', { class: 'small', onclick: toggleAll }, 'Select all / none')),
-    ...rows,
-    ...extra);
-  $('#files').scrollTop = scroll;
+function uiState(id) {
+  if (!treeState.has(id)) treeState.set(id, { open: new Set(), shown: new Map(), focus: null });
+  return treeState.get(id);
+}
+
+// Reads the folder in view (and for a friend the owner's list) and draws the tree. Called when a
+// folder is selected, when something changed, and when the window comes back to the front.
+// options.fresh: not from the listing the main process kept for a few seconds.
+async function refreshFiles(options = {}) {
+  const share = selected();
+  if (!share) return;
+  const mine = ++refreshCount;
+  let listing;
+  let remote;
+  try {
+    listing = share.dir ? await api.listFiles(share.id, options.fresh ? { fresh: true } : undefined) : { files: [], missing: null };
+    remote = share.role === 'guest' ? await remoteList(share.id) : null;
+  } catch {
+    // the folder was removed meanwhile: what is on the screen stays until the window is drawn again
+    return;
+  }
+  // another folder was selected, or a newer read took over, while this one was running
+  if (mine !== refreshCount || selectedId !== share.id || !$('#files')) return;
+  listedAt = Date.now();
+  let built;
+  let kind = 'plain';
+  if (remote && remote.length) {
+    // what is on this disk but not in the owner's list is shown apart, without a choice
+    const known = new Set(remote.map((f) => f.path));
+    built = tree.build(remote, listing.files.filter((f) => !known.has(f.path)));
+    tree.markDone(built.root, new Map(listing.files.map((f) => [f.path, f])));
+    tree.choose(built.root, new Set(share.excluded));
+    kind = 'choice';
+  } else {
+    built = tree.build(listing.files);
+  }
+  view = { id: share.id, role: share.role, kind, built, missing: listing.missing };
+  renderFiles();
+  // the owner's status line says when the folder cannot be found
+  renderStatus();
+}
+
+// Draws the title, the notes and the rows of `view`.
+function renderFiles() {
+  const share = selected();
+  if (!share || !view || view.id !== share.id || !$('#files')) return;
+  const { built, kind } = view;
+  const missing = share.role === 'host' && view.missing;
+  const add = $('#btn-add');
+  if (add) add.disabled = !!missing;
+  const selectAll = $('#btn-selectall');
+  if (selectAll) selectAll.hidden = kind !== 'choice';
+  const note = $('#files-note');
+  note.replaceChildren();
+  if (missing) {
+    keepTreeFocus = false;
+    $('#files-title').textContent = 'Files';
+    $('#files').replaceChildren(el('div', { class: 'missing', role: 'alert' },
+      el('strong', {}, 'This folder cannot be found.'),
+      el('p', {}, missing === 'denied' ? 'FriendsShare is not allowed to read it.' : 'It was moved or deleted, or its drive is not connected.'),
+      el('p', {}, 'Friends cannot download it right now. Put it back where it was, or remove it from your list.')));
+    return;
+  }
+  const { root } = built;
+  $('#files-title').textContent = kind === 'choice'
+    ? `Files (${root.wantedCount} of ${root.count} selected, ${formatBytes(root.wantedSize)})`
+    : root.count ? `Files (${root.count}, ${formatBytes(root.size)})` : 'Files';
+  // the owner's app chooses the names, and some cannot be written on Windows (see tree.unsafePath)
+  if (built.bad.length) {
+    const one = built.bad.length === 1;
+    note.append(`${plural(built.bad.length, 'file')} cannot be downloaded: ${one ? 'its name is' : 'their names are'} not allowed on Windows. ${one ? 'It is' : 'They are'} skipped. `,
+      ...fileNote(share.id, 'bad', built.bad.map((b) => ({ path: b.path, note: b.why })), renderFiles).filter(Boolean));
+  }
+  renderTree();
+}
+
+// Draws the rows again: those of the folders that are open, in the order of the tree. The focus and
+// the scroll position stay where they were.
+function renderTree() {
+  const box = $('#files');
+  const ui = uiState(view.id);
+  const choice = view.kind === 'choice';
+  const rows = tree.rows(view.built, ui.open, ui.shown);
+  if (!rows.length) {
+    box.replaceChildren(el('div', { class: 'empty-note' }, view.role === 'host' ? 'This folder is empty.' : 'Nothing here yet.'));
+    return;
+  }
+  // One row is the one that Tab reaches, the one that had the focus last; the arrow keys go from row
+  // to row from there.
+  const keys = rows.map(tree.rowKey);
+  // (the row that has the focus now is the truth, whatever the focus events said)
+  const focused = box.contains(document.activeElement) ? document.activeElement.closest('.node') : null;
+  if (focused) ui.focus = focused.dataset.key;
+  const current = keys.includes(ui.focus) ? ui.focus : keys[0];
+  const hadFocus = keepTreeFocus || !!focused;
+  keepTreeFocus = false;
+  const scroll = box.scrollTop;
+  box.replaceChildren(...rows.map((row, i) => treeRow(row, keys[i], keys[i] === current, choice, ui)));
+  box.scrollTop = scroll;
+  if (hadFocus) box.querySelector('.node[tabindex="0"]').focus({ preventScroll: true });
+}
+
+const CHECKED = { all: 'true', none: 'false', mixed: 'mixed' };
+
+// The checkbox of a row: a real one, so that the system draws it (also in high-contrast themes) and
+// "mixed" is the usual dash. The row is what has the focus and says "checked" to a screen reader, so
+// the box itself is out of both.
+function checkbox(state) {
+  const box = el('input', { type: 'checkbox', class: 'check', tabindex: -1, 'aria-hidden': 'true' });
+  box.checked = state === 'all';
+  box.indeterminate = state === 'mixed';
+  return box;
+}
+
+function treeRow(row, key, current, choice, ui) {
+  const base = { role: 'treeitem', tabindex: current ? 0 : -1, 'aria-level': row.depth + 1, 'data-key': key };
+  // indent by CSS class: the page may not carry inline styles
+  const indent = `d${Math.min(row.depth, 12)}`;
+  if (row.more) {
+    return el('div', { ...base, class: `node more ${indent}` },
+      el('span', { class: 'chev' }),
+      el('span', { class: 'name' }, `Show more (${row.hidden} more)`));
+  }
+  const n = row.node;
+  const open = n.dir && ui.open.has(n.path);
+  const pick = choice && !n.extra;
+  const state = n.dir ? n.state : n.wanted ? 'all' : 'none';
+  // what is on this disk already
+  const mark = !choice || (n.dir && (n.extra || !n.count))
+    ? ''
+    : n.dir ? (n.done === n.count ? 'all downloaded' : n.done ? `${n.done} of ${n.count} downloaded` : '') : n.done ? 'downloaded' : '';
+  return el('div', {
+    ...base,
+    class: `node ${n.dir ? 'dir' : 'file'} ${indent}`,
+    'aria-setsize': row.of,
+    'aria-posinset': row.index + 1,
+    'aria-expanded': n.dir ? String(open) : null,
+    'aria-checked': pick ? CHECKED[state] : null,
+  },
+    el('span', { class: `chev${open ? ' open' : ''}`, 'aria-hidden': 'true' }),
+    pick && checkbox(state),
+    el('span', { class: 'name', title: n.dir || !n.extra ? n.path : n.name }, n.name),
+    choice && el('span', { class: 'done' }, mark),
+    el('span', { class: 'meta' }, n.dir ? plural(n.count, 'file') : ''),
+    el('span', { class: 'size' }, formatBytes(n.size)));
+}
+
+// the node of a key (see tree.rowKey)
+function nodeFor(key) {
+  const { root, extras } = view.built;
+  if (extras && key.startsWith(extras.path)) {
+    const rest = key.slice(extras.path.length + 1);
+    return rest === '' ? extras : extras.kids.get(rest) || null;
+  }
+  return tree.find(root, key);
+}
+
+// What a row stands for: { node }, or { more: the folder that has more entries than are shown }.
+function rowFor(key) {
+  if (key.endsWith('/\u0000more')) {
+    const path = key.slice(0, -'/\u0000more'.length);
+    const dir = path === '' ? view.built.root : nodeFor(`${path}/`);
+    return dir ? { more: dir } : null;
+  }
+  const node = nodeFor(key);
+  return node ? { node } : null;
+}
+
+function toggleOpen(dir, key) {
+  const ui = uiState(view.id);
+  ui.open[ui.open.has(dir.path) ? 'delete' : 'add'](dir.path);
+  ui.focus = key;
+  renderTree();
+}
+
+function showMore(dir) {
+  const ui = uiState(view.id);
+  const before = ui.shown.get(dir.path) || tree.PAGE;
+  ui.shown.set(dir.path, before + tree.PAGE);
+  // the focus goes to the first entry that was not there before
+  const first = tree.sortedKids(dir)[before];
+  if (first) ui.focus = tree.entryOf(first);
+  renderTree();
+}
+
+// A new list of excluded paths for the folder in view. Only that small list is written, and the
+// tree is not read from the disk again: nothing on the disk changed.
+function setChoice(share, list) {
+  if (list === share.excluded || !view || view.kind !== 'choice') return;
+  share.excluded = list;
+  tree.choose(view.built.root, new Set(list));
+  renderFiles();
+  api.updateShare(share.id, { excluded: list }).catch((err) => alert(errorText(err)));
+}
+
+// A click, or Space, on a file or folder of a friend's folder: a folder that is not ticked all the
+// way (nothing or only some of it) is ticked, a ticked one is unticked.
+function toggleNode(node) {
+  const share = selected();
+  if (!share || !view || view.kind !== 'choice') return;
+  setChoice(share, tree.setWanted(share.excluded || [], node, node.dir ? node.state !== 'all' : !node.wanted));
+}
+
+// all ticked -> untick all, otherwise tick all
+function selectAllOrNone() {
+  const share = selected();
+  if (!share || !view || view.kind !== 'choice') return;
+  const { root } = view.built;
+  setChoice(share, root.state === 'all' ? tree.selectNone(share.excluded || [], root) : tree.selectAll(share.excluded || [], root));
+}
+
+// One listener each for all the rows of the list: there are many, and they are drawn again often.
+function wireTree(box) {
+  box.addEventListener('click', (e) => {
+    const row = e.target.closest('.node');
+    const target = row && view && rowFor(row.dataset.key);
+    if (!target) return;
+    uiState(view.id).focus = row.dataset.key;
+    // the list is drawn again from what is chosen, so the box must not also change by itself
+    if (e.target.closest('.check')) e.preventDefault();
+    if (target.more) return showMore(target.more);
+    const { node } = target;
+    // a file is ticked by a click anywhere on its row, a folder by a click on its checkbox; a click
+    // on the rest of a folder opens or closes it
+    if (view.kind === 'choice' && !node.extra && (!node.dir || e.target.closest('.check'))) toggleNode(node);
+    else if (node.dir) toggleOpen(node, row.dataset.key);
+  });
+  box.addEventListener('focusin', (e) => {
+    const row = e.target.closest('.node');
+    if (!row || !view) return;
+    uiState(view.id).focus = row.dataset.key;
+    box.querySelector('.node[tabindex="0"]')?.setAttribute('tabindex', '-1');
+    row.setAttribute('tabindex', '0');
+  });
+  box.addEventListener('keydown', onTreeKey);
+}
+
+// Tab reaches the list, Up and Down go from row to row, Right and Left open and close a folder (or
+// go into it and to its parent), Enter opens and closes, Space ticks, Home and End go to the ends.
+function onTreeKey(e) {
+  const row = e.target.closest('.node');
+  if (!row || e.target !== row || !view || e.ctrlKey || e.metaKey || e.altKey) return;
+  const rows = [...e.currentTarget.querySelectorAll('.node')];
+  const at = rows.indexOf(row);
+  const level = (r) => Number(r.getAttribute('aria-level'));
+  const key = row.dataset.key;
+  const target = rowFor(key);
+  const dir = target && target.node && target.node.dir ? target.node : null;
+  const open = !!dir && uiState(view.id).open.has(dir.path);
+  const go = (r) => r && r.focus();
+  switch (e.key) {
+    case 'ArrowDown': go(rows[at + 1]); break;
+    case 'ArrowUp': go(rows[at - 1]); break;
+    case 'Home': go(rows[0]); break;
+    case 'End': go(rows[rows.length - 1]); break;
+    case 'ArrowRight':
+      if (dir && !open) toggleOpen(dir, key);
+      else if (open && rows[at + 1] && level(rows[at + 1]) > level(row)) go(rows[at + 1]);
+      break;
+    case 'ArrowLeft':
+      if (open) toggleOpen(dir, key);
+      else go(rows.slice(0, at).reverse().find((r) => level(r) < level(row)));
+      break;
+    case 'Enter':
+      if (target && target.more) showMore(target.more);
+      else if (dir) toggleOpen(dir, key);
+      break;
+    case ' ':
+      if (target && target.more) showMore(target.more);
+      else if (target && view.kind === 'choice' && !target.node.extra) toggleNode(target.node);
+      else if (dir) toggleOpen(dir, key);
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
 }
 
 async function importInto(share, run) {
@@ -336,7 +701,7 @@ async function importInto(share, run) {
     alert(`Could not add the files: ${errorText(err)}`);
   }
   if (hint?.isConnected) hint.textContent = before;
-  refreshFiles();
+  refreshFiles({ fresh: true });
 }
 
 const addFiles = (share) => importInto(share, () => api.pickFiles(share.id));
@@ -360,9 +725,30 @@ async function removeShare(share) {
   status.delete(share.id);
   blockedGuests.delete(share.id);
   blockedHosts.delete(share.id);
+  unregistered.delete(share.id);
+  remoteLists.delete(share.id);
+  treeState.delete(share.id);
+  if (view && view.id === share.id) view = null;
   // a slot is free now: folders the server refused for the limit get another try
   limited.clear();
   await reload();
+}
+
+// What a sync says when it is over: "Synced. 12 files downloaded, 2 could not be read on your
+// friend's PC." The files that were left out are listed apart (see renderSkipped).
+function syncText({ listOnly, downloaded, skipped }) {
+  if (listOnly) return 'Choose what to download, then click Download selected.';
+  if (!downloaded && !skipped.length) return 'Up to date.';
+  const count = (why) => skipped.filter((s) => s.why === why).length;
+  const parts = [];
+  if (downloaded) parts.push(`${plural(downloaded, 'file')} downloaded`);
+  // the first thing said is a number of files, the others only a number
+  const n = (k) => (parts.length ? `${k}` : plural(k, 'file'));
+  if (count('read')) parts.push(`${n(count('read'))} could not be read on your friend's PC`);
+  if (count('changed')) parts.push(`${n(count('changed'))} changed while downloading`);
+  if (count('name')) parts.push(`${n(count('name'))} ${count('name') === 1 ? 'has a name' : 'have names'} that Windows does not allow`);
+  if (count('local')) parts.push(`${n(count('local'))} could not be saved on this PC`);
+  return `Synced. ${parts.join(', ')}.`;
 }
 
 // Until the friend clicked the download button once, a sync only fetches the file list.
@@ -383,6 +769,7 @@ async function syncShare(id, options = {}) {
   show({ kind: 'syncing', text: 'Connecting to your friend…' });
   let last = { t: performance.now(), done: 0, shown: 0, speed: 0 };
   let downloaded = 0;
+  let skipped = 0;
   try {
     if (options.download && !share.chosen) {
       share.chosen = true;
@@ -397,7 +784,12 @@ async function syncShare(id, options = {}) {
     }, { listOnly: !share.chosen });
     syncing.delete(id);
     downloaded = result.downloaded;
-    status.set(id, { kind: 'ok', text: result.listOnly ? 'Choose what to download, then click Download selected.' : result.downloaded ? `Synced. ${result.downloaded} file${result.downloaded === 1 ? '' : 's'} downloaded.` : 'Up to date.' });
+    skipped = result.skipped.length;
+    // the list the owner just sent is what the tree shows from now on (it was stored as well); a
+    // folder that is not in view does not keep it in the window
+    if (selectedId === id) remoteLists.set(id, result.remote);
+    else remoteLists.delete(id);
+    status.set(id, { kind: skipped ? 'warn' : 'ok', text: syncText(result), skipped: result.skipped });
   } catch (err) {
     syncing.delete(id);
     if (err.code === 'limit') {
@@ -411,7 +803,7 @@ async function syncShare(id, options = {}) {
   }
   await reload();
   // the main process shows a notification if the window is hidden or minimized
-  if (downloaded) api.syncDone(state.shares.find((s) => s.id === id)?.name || share.name, downloaded);
+  if (downloaded) api.syncDone(state.shares.find((s) => s.id === id)?.name || share.name, downloaded, skipped);
 }
 
 const syncAll = () => state.shares.filter((s) => s.role === 'guest' && !isExpired(s)).forEach((s) => syncShare(s.id));
@@ -672,7 +1064,11 @@ window.addEventListener('drop', (e) => {
   const paths = [...e.dataTransfer.files].map((f) => api.pathOf(f)).filter(Boolean);
   if (share?.role === 'host' && paths.length) importInto(share, () => api.importPaths(share.id, paths));
 });
-window.addEventListener('focus', refreshFiles);
+// Back in the window: the folder in view may have changed meanwhile. It is read again, only that one
+// and not more often than every few seconds (see FOCUS_REFRESH_AFTER).
+window.addEventListener('focus', () => {
+  if (Date.now() - listedAt > FOCUS_REFRESH_AFTER) refreshFiles();
+});
 
 // ---- the matchmaking connection ----
 
@@ -699,6 +1095,12 @@ p2p.on('conn', (next) => {
 // folders the server refused for the limit.
 p2p.on('welcome', async (message) => {
   limited.clear();
+  // every folder is registered again on this connection, and the ones that are refused say so again
+  if (unregistered.size) {
+    unregistered.clear();
+    renderSidebar();
+    renderStatus();
+  }
   try {
     applyAccount(await api.accountWelcome(message));
   } catch {}
@@ -724,7 +1126,14 @@ p2p.on('online', async (room) => {
 p2p.on('hostError', ({ shareId, code }) => {
   const share = state.shares.find((s) => s.id === shareId);
   if (!share) return;
-  if (code === 'limit') {
+  if (code === 'limit' && account.limit === null) {
+    // The welcome said there is no limit, so this has nothing to do with the plan: an address can
+    // only register 60 new folders an hour, and the server's table can be full. Nothing to upgrade;
+    // it is tried again on the next connection and every few minutes (see retryUnregistered).
+    unregistered.add(shareId);
+    renderSidebar();
+    if (selectedId === shareId) renderStatus();
+  } else if (code === 'limit') {
     // paused; it starts again by itself when a slot is free
     limited.add(shareId);
     if (refreshPaused()) {
@@ -753,9 +1162,22 @@ p2p.on('roomError', async ({ room, code }) => {
   }
 });
 
+// The server took a folder of ours (it says so for every registration, a new try included).
+p2p.on('hostOk', ({ shareId }) => {
+  if (!unregistered.delete(shareId)) return;
+  renderSidebar();
+  if (selectedId === shareId) renderStatus();
+});
+
+// Asks the server again for the folders it did not take. They are not asked about again by
+// themselves, which would be asking every time anything changes.
+function retryUnregistered() {
+  for (const id of unregistered) p2p.retryHost(id);
+}
+
+// `sent` is what was sent for the folder in all, to every friend
 p2p.on('host', ({ shareId, friends, sent }) => {
-  const info = hostInfo.get(shareId) || { sent: 0 };
-  hostInfo.set(shareId, { friends, sent: Math.max(info.sent, sent) });
+  hostInfo.set(shareId, { friends, sent });
   if (selectedId === shareId) renderStatus();
 });
 
@@ -820,6 +1242,8 @@ api.onUpdateProgress((pct) => renderUpdate(pct));
   setInterval(checkUpdate, UPDATE_CHECK_EVERY);
   p2p.connect(state.signalUrl);
   setInterval(syncAll, RESYNC_EVERY);
-  // a code that runs out while the app is open stops being served
+  // a code that runs out while the app is open stops being served (watchExpiry does it at the moment
+  // it runs out; this is the net under it)
   setInterval(() => p2p.setHostShares(activeShares()), 60 * 1000);
+  setInterval(retryUnregistered, RETRY_REGISTER_EVERY);
 })();

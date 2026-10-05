@@ -70,7 +70,7 @@ const config = {
     {
       id: ids.clips, role: 'guest', name: 'Game night clips', dir: clips, code: 'b90e2d6c-41a7-4c1e-8f33-6d0a59e7c2b1', createdAt: now - 6 * DAY,
       // the friend has just added the code: the list is there, nothing is downloaded yet
-      expiresAt: now + 24 * DAY, chosen: false, excluded: ['Raw footage/cam1.mkv', 'Raw footage/cam2.mkv'],
+      expiresAt: now + 24 * DAY, chosen: false, excluded: ['Raw footage/'],
       remote: clipFiles,
     },
     { id: ids.wedding, role: 'guest', name: 'Wedding photos', dir: path.join(shares, 'Wedding photos'), code: 'e3a7c0d1-5b28-4f96-a1d4-90c6f2b8e715', createdAt: now - 2 * DAY, expiresAt: now + 300 * DAY, lastSync: now - 7200000, chosen: true, remote: [] },
@@ -99,7 +99,7 @@ app.whenReady().then(async () => {
   }
   await wait(2500);
   // tall enough that neither view needs a scrollbar
-  win.setContentSize(972, 700);
+  win.setContentSize(972, 740);
   const js = (code) => win.webContents.executeJavaScript(code);
 
   // Shows one folder exactly as a visitor should see it and resolves once it is on screen. The
@@ -113,12 +113,22 @@ app.whenReady().then(async () => {
       applyAccount({ signedIn: false, account: null, plan: 'free', limit: 5, billing: true,
         prices: { monthly: '€1.99', yearly: '€11.88', yearly_per_month: '€0.99' }, signingIn: false, error: null });
       select(${JSON.stringify(id)});
-      await until(() => document.querySelectorAll('#files .file').length >= ${expectedRows});
+      await until(() => document.querySelectorAll('#files .node').length > 0);
+      // the list is a tree with its folders closed: open them all, so the picture shows the files
+      for (let i = 0; i < 20; i++) {
+        const closed = document.querySelector('#files .node.dir[aria-expanded="false"] .name');
+        if (!closed) break;
+        closed.click();
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await until(() => document.querySelectorAll('#files .node').length >= ${expectedRows});
+      // no row should look focused in the picture
+      if (document.activeElement) document.activeElement.blur();
       ${tweaks}
       setConn({ kind: 'online' });
       renderStatus();
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return document.querySelectorAll('#files .file').length;
+      return document.querySelectorAll('#files .node').length;
     })()`);
   const shot = async (file) => {
     const image = await win.webContents.capturePage();
@@ -127,19 +137,20 @@ app.whenReady().then(async () => {
   };
 
   // the owner's view: a friend is downloading. A neutral path instead of this machine's.
-  let rows = await show(ids.holiday, holidayFiles.length, `
+  // rows: the files plus the two folders (Drone, Photos)
+  let rows = await show(ids.holiday, holidayFiles.length + 2, `
     hostInfo.set(${JSON.stringify(ids.holiday)}, { friends: 1, sent: ${Math.round(2.1 * GB)} });
     document.querySelector('.path').textContent = ${JSON.stringify('D:\\Shared\\Holiday videos 2026')};
   `);
-  if (rows < holidayFiles.length) throw new Error('the file list of the first picture did not show up');
+  if (rows < holidayFiles.length + 2) throw new Error('the file list of the first picture did not show up');
   await shot('app-share.png');
 
   // the friend's view: the list has arrived, nothing is downloaded yet
-  rows = await show(ids.clips, clipFiles.length, `
+  rows = await show(ids.clips, clipFiles.length + 1, `
     status.set(${JSON.stringify(ids.clips)}, { kind: 'ok', text: 'Choose what to download, then click Download selected.' });
     document.querySelector('.path').textContent = ${JSON.stringify('D:\\Shared\\Game night clips')};
   `);
-  if (rows < clipFiles.length) throw new Error('the file list of the second picture did not show up');
+  if (rows < clipFiles.length + 1) throw new Error('the file list of the second picture did not show up');
   await shot('app-download.png');
 
   win.destroy();

@@ -72,8 +72,9 @@ t.scenario('A folder syncs between two app instances through a local server', as
   await t.sleep(2500);
   const leaked = Object.keys(excluded).filter((rel) => fs.existsSync(path.join(guestDir, rel)) || (fs.existsSync(path.join(guestDir, path.dirname(rel))) && fs.readdirSync(path.join(guestDir, path.dirname(rel))).length));
   t.check(leaked.length === 0, `the file the friend unchecked was not downloaded${leaked.length ? ` (found ${leaked})` : ''}`);
-  const saved = guest.config().shares[0];
-  t.check((saved.remote || []).length === Object.keys(files).length + Object.keys(excluded).length, 'the friend\'s app stored the file list of the owner');
+  // the list is a file of its own in the profile, and not part of config.json (see app/remote.js)
+  const stored = guest.remote('g1');
+  t.check(!!stored && stored.files.length === Object.keys(files).length + Object.keys(excluded).length && guest.config().shares[0].remote === undefined, 'the friend\'s app stored the file list of the owner, in a file of its own and not in config.json');
 
   // protocol 2: both apps shook hands, as plain builds from source, and nobody was turned away
   const stats = await server.stats();

@@ -8,6 +8,21 @@
 // Channel protocol, friend -> owner:  {t:'auth',mac}  {t:'list'}  {t:'get',path,offset}
 //                   owner -> friend:  {t:'auth',mac}  {t:'files',files}... {t:'manifest',name,expiresAt}
 //                                     binary chunks... {t:'end'}   or   {t:'fail',reason}
+//
+// Every request is answered with 'manifest' (list) or 'end' (get), or with a 'fail', which has two
+// kinds. One is about a single file:
+//     {t:'fail', reason:'read', path}   that file cannot be opened or read (it is open in another
+//                                       program, no permission, it is gone, or it is not a real file
+//                                       inside the folder). The owner goes on with the next request,
+//                                       and the friend notes the file as skipped and asks for the next.
+// The other, without a path, is about everything and ends the sync:
+//     {t:'fail', reason:'expired'}              the code ran out
+//     {t:'fail', code:'gone', reason:<text>}    the owner's folder is not there (moved, deleted, its drive
+//                                               is not connected). `reason` is a sentence, so that a
+//                                               friend that does not know `code` shows it as it is.
+// Versions up to 1.2.0 know only the second kind: they take every 'fail' as the end of the sync, and
+// that is what they do with a 'read' that has a path. Their own 'read' has no path, and 1.2.1 takes
+// it the same way, as the end of the sync.
 const p2p = (() => {
   // STUN only tells each side its public address. There is deliberately no TURN relay: file data
   // must not travel through a server.
@@ -35,8 +50,15 @@ const p2p = (() => {
     auth: 'The other side does not know this share code.',
     read: 'Your friend\'s app could not read a file.',
     changed: 'A file changed while it was downloading. Sync again.',
+    gone: "Your friend's folder is not available right now.",
+    disk: 'Not enough space on this disk.',
+    remote: "Your friend's app reported an error.",
   };
-  const fail = (code) => Object.assign(new Error(MESSAGES[code] || code), { code });
+  const fail = (code) => Object.assign(new Error(MESSAGES[code] || String(code).slice(0, 300)), { code });
+
+  // The errors of the main process arrive as "Error invoking remote method '...': Error: [tag] text";
+  // the tag (see TaggedError in folder.js) is what tells them apart.
+  const tagOf = (err) => (/\[(gone|read|disk|name|local)\]/.exec((err && err.message) || '') || [])[1];
 
   const enc = new TextEncoder();
   const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -57,6 +79,8 @@ const p2p = (() => {
     online: () => {},
     // the server refused one of our own folders: { shareId, code }
     hostError: () => {},
+    // the server took one of our own folders (it says so for every registration, a repeated one included): { shareId }
+    hostOk: () => {},
     // an answer about a room that no pending join waits for (a friend's folder): { room, code }
     roomError: () => {},
     host: () => {},
@@ -187,6 +211,8 @@ const p2p = (() => {
         // a friend's folder we were waiting for (the server can also say 'blocked' unprompted)
         events.roomError({ room: m.room, code: m.code });
       }
+    } else if (m.t === 'hosted' && hosted.has(m.room)) {
+      events.hostOk({ shareId: hosted.get(m.room).id });
     } else if (m.t === 'plan') {
       events.plan({ plan: m.plan, limit: m.limit });
     } else if (m.t === 'online') {
@@ -241,7 +267,7 @@ const p2p = (() => {
 
   function createPeer(room, remoteId, code, isGuest) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const peer = { pc, dc: null, room, remoteId, code, isGuest, authed: false, closed: false, chain: Promise.resolve(), waiter: null, sent: 0 };
+    const peer = { pc, dc: null, room, remoteId, code, isGuest, authed: false, closed: false, chain: Promise.resolve(), waiter: null };
     peer.ready = new Promise((resolve, reject) => Object.assign(peer, { onReady: resolve, onDead: reject }));
     peer.ready.catch(() => {});
     peers.set(`${room}|${remoteId}`, peer);
@@ -335,6 +361,17 @@ const p2p = (() => {
     for (const [room, share] of hosted) announce(room, share);
   };
 
+  // Registers a folder again that the server refused for a reason that has nothing to do with the
+  // plan (see app.js). A refused folder is not asked about again by itself: that would be asking
+  // every time anything changes. It is asked again on the next connection, and when this is called.
+  function retryHost(shareId) {
+    for (const [room, share] of hosted) {
+      if (share.id !== shareId) continue;
+      announced.delete(room);
+      announce(room, share);
+    }
+  }
+
   // Tells the matchmaking server which folders can be reached here. Codes that are gone (replaced
   // or removed) are withdrawn and their connections closed.
   function setHostShares(shares) {
@@ -358,11 +395,14 @@ const p2p = (() => {
     for (const [room, share] of next) announce(room, share);
   }
 
+  // room -> bytes sent for that folder since the app started, to all friends together
+  const sentByRoom = new Map();
+
   function hostActivity(peer) {
     const share = hosted.get(peer.room);
     if (!share) return;
     const friends = [...peers.values()].filter((p) => p.room === peer.room && !p.isGuest).length;
-    events.host({ shareId: share.id, friends, sent: peer.sent });
+    events.host({ shareId: share.id, friends, sent: sentByRoom.get(peer.room) || 0 });
   }
 
   const drained = (peer) =>
@@ -376,8 +416,11 @@ const p2p = (() => {
   async function hostMessage(peer, m) {
     const share = hosted.get(peer.room);
     if (!share || share.expiresAt <= Date.now()) return sendJson(peer, { t: 'fail', reason: 'expired' });
+    // The folder is not there: not an empty folder, which is what friends would take it for.
+    const gone = { t: 'fail', code: 'gone', reason: MESSAGES.gone };
     if (m.t === 'list') {
-      const files = await api.listFiles(share.id);
+      const { files, missing } = await api.listFiles(share.id);
+      if (missing) return sendJson(peer, gone);
       for (let i = 0; i < files.length; i += MANIFEST_BATCH) sendJson(peer, { t: 'files', files: files.slice(i, i + MANIFEST_BATCH) });
       sendJson(peer, { t: 'manifest', name: share.name, expiresAt: share.expiresAt });
     } else if (m.t === 'get') {
@@ -392,12 +435,14 @@ const p2p = (() => {
           if (peer.closed) break;
           peer.dc.send(chunk);
           pos += chunk.byteLength;
-          peer.sent += chunk.byteLength;
+          sentByRoom.set(peer.room, (sentByRoom.get(peer.room) || 0) + chunk.byteLength);
           hostActivity(peer);
         }
         if (!peer.closed) sendJson(peer, { t: 'end' });
-      } catch {
-        if (!peer.closed) sendJson(peer, { t: 'fail', reason: 'read' });
+      } catch (err) {
+        // Only this file failed, unless the whole folder is gone. The path tells the friend which
+        // one it was, so that it can go on with the next (see the top of this file).
+        if (!peer.closed) sendJson(peer, tagOf(err) === 'gone' ? gone : { t: 'fail', reason: 'read', path: typeof m.path === 'string' ? m.path : '' });
       } finally {
         if (h) api.close(h);
       }
@@ -422,25 +467,51 @@ const p2p = (() => {
     else waiter?.resolve(value);
   }
 
+  // The reasons of a 'fail' that this version knows. Anything else is shown as a general error:
+  // the owner's app is not trusted to put words in the window, or to pose as the server.
+  const FAIL_REASONS = ['expired', 'read', 'gone'];
+
   function guestMessage(peer, m) {
     if (m.t === 'files') peer.files.push(...m.files);
     else if (m.t === 'manifest') answer(peer, m);
     else if (m.t === 'end') answer(peer);
-    else if (m.t === 'fail') answer(peer, null, fail(m.reason));
+    else if (m.t === 'fail') {
+      if (m.reason === 'read' && typeof m.path === 'string' && m.path) {
+        // only this file (see the top of this file): the sync goes on without it
+        answer(peer, null, Object.assign(fail('read'), { skip: 'read', file: m.path }));
+      } else {
+        // everything else, and a 'read' without a path (an older owner's), is the end of the sync
+        answer(peer, null, fail([m.code, m.reason].find((c) => FAIL_REASONS.includes(c)) || 'remote'));
+      }
+    }
   }
 
   async function guestChunk(peer, data) {
     const sink = peer.sink;
-    if (!sink) return;
-    await api.write(sink.h, data);
+    if (!sink || sink.error) return;
+    try {
+      await api.write(sink.h, data);
+    } catch (err) {
+      // The disk, most likely. The owner is still sending this file, so there is no going on with
+      // the next one: the sync ends here, and what has arrived stays as a part to continue from.
+      sink.error = tagOf(err) === 'disk' ? fail('disk') : err;
+      return answer(peer, null, sink.error);
+    }
     sink.received += data.byteLength;
     sink.onBytes(data.byteLength);
   }
 
   // Downloads everything that is missing or different from a friend's folder. Nothing is ever
-  // deleted locally. Files in share.excluded are skipped. onProgress gets { file, done, total } in
-  // bytes, counting only the files that will be downloaded. With options.listOnly nothing is
-  // downloaded; the fresh remote list is stored either way so the UI can show it.
+  // deleted locally. Files in share.excluded (and files inside folders in it) are skipped.
+  // onProgress gets { file, done, total } in bytes, counting only the files that will be downloaded.
+  // With options.listOnly nothing is downloaded; the fresh remote list is stored either way so the
+  // UI can show it.
+  //
+  // One file that cannot be had does not stop the sync: it is noted in `skipped` and the next one
+  // is asked for, and the next sync tries it again. Only what affects everything ends it: the
+  // connection is lost, the code expired, the owner's folder is gone, the disk is full.
+  // -> { downloaded, files, skipped: [{ path, why: 'read' | 'changed' | 'name' | 'local', note? }],
+  //      remote: the owner's list, listOnly? }
   async function sync(share, onProgress, options = {}) {
     const room = await sha256(share.code);
     const hostId = await join(room);
@@ -455,41 +526,67 @@ const p2p = (() => {
       clearTimeout(timer);
 
       const manifest = await request(peer, { t: 'list' });
-      await api.updateShare(share.id, { name: manifest.name, expiresAt: manifest.expiresAt, remote: peer.files });
-      if (options.listOnly) return { downloaded: 0, files: peer.files.length, listOnly: true };
-      const local = new Map((await api.listFiles(share.id)).map((f) => [f.path, f]));
+      // what makes no sense (no size, no time, a path twice) is dropped before it is stored or used
+      const remote = tree.validEntries(peer.files);
+      await api.updateShare(share.id, { name: manifest.name, expiresAt: manifest.expiresAt, remote });
+      if (options.listOnly) return { downloaded: 0, files: remote.length, listOnly: true, remote, skipped: [] };
+      const local = new Map((await api.listFiles(share.id, { fresh: true })).files.map((f) => [f.path, f]));
       const excluded = new Set(share.excluded);
-      const wanted = peer.files.filter((f) => {
-        if (excluded.has(f.path)) return false;
-        const mine = local.get(f.path);
-        // a finished download carries the original's modified time (to the precision of the disk)
-        return !mine || mine.size !== f.size || Math.abs(mine.mtime - f.mtime) > 2000;
-      });
+      const skipped = [];
+      const wanted = [];
+      for (const f of remote) {
+        if (tree.isExcluded(excluded, f.path)) continue;
+        // the owner's app chooses the names, and a name that is trouble on Windows is not written
+        const bad = tree.unsafePath(f.path);
+        if (bad) skipped.push({ path: f.path, why: 'name', note: bad });
+        else if (!tree.upToDate(f, local.get(f.path))) wanted.push(f);
+      }
 
-      const total = wanted.reduce((sum, f) => sum + f.size, 0);
+      let total = wanted.reduce((sum, f) => sum + f.size, 0);
       let done = 0;
+      let downloaded = 0;
       for (const f of wanted) {
-        const { h, offset } = await api.openWrite(share.id, f.path, f.size, f.mtime);
-        done += offset;
-        onProgress({ file: f.path, done, total });
-        peer.sink = {
-          h,
-          received: offset,
-          onBytes: (n) => onProgress({ file: f.path, done: (done += n), total }),
-        };
+        let h = null;
+        // what this file has added to `done`, to take it out again when the file is left out
+        let counted = 0;
         try {
-          if (offset < f.size || f.size === 0) await request(peer, { t: 'get', path: f.path, offset });
-          if (peer.sink.received !== f.size) throw fail('changed');
+          const opened = await api.openWrite(share.id, f.path, f.size, f.mtime);
+          h = opened.h;
+          counted = opened.offset;
+          done += counted;
+          onProgress({ file: f.path, done, total });
+          peer.sink = {
+            h,
+            received: opened.offset,
+            error: null,
+            onBytes: (n) => {
+              counted += n;
+              onProgress({ file: f.path, done: (done += n), total });
+            },
+          };
+          if (opened.offset < f.size || f.size === 0) await request(peer, { t: 'get', path: f.path, offset: opened.offset });
+          // the owner's file got shorter or longer while it was sent
+          if (peer.sink.received !== f.size) throw Object.assign(fail('changed'), { skip: 'changed' });
           await api.finish(h);
+          h = null;
+          downloaded++;
         } catch (err) {
-          await api.close(h);
-          throw err;
+          // what arrived stays as a part, to go on from at the next sync (an empty one is not kept)
+          if (h !== null) await api.close(h, true).catch(() => {});
+          const tag = tagOf(err);
+          // an answer about another file than the one asked for is not one we can trust
+          const why = err.skip === 'read' && err.file !== f.path ? null : err.skip || (tag === 'name' || tag === 'local' ? tag : null);
+          if (!why) throw tag === 'disk' ? fail('disk') : err;
+          skipped.push({ path: f.path, why, note: why === 'local' ? String(err.message).replace(/^.*\[local\]\s*/, '') : undefined });
+          done -= counted;
+          total -= f.size;
+          onProgress({ file: f.path, done, total });
         } finally {
           peer.sink = null;
         }
       }
       await api.updateShare(share.id, { lastSync: Date.now() });
-      return { downloaded: wanted.length, files: peer.files.length };
+      return { downloaded, files: remote.length, skipped, remote };
     } finally {
       clearTimeout(timer);
       closePeer(peer);
@@ -500,6 +597,7 @@ const p2p = (() => {
     connect,
     reconnect,
     setHostShares,
+    retryHost,
     sync,
     leave,
     // the room of a share code, to tell which folder a message from the server is about

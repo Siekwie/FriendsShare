@@ -8,8 +8,13 @@ const t = require('./lib');
 const build = require('../app/build');
 const { createAccount, deriveSite, normalizeSignalUrl, cleanWelcome, sameSite } = require('../app/account');
 const { buildKey, makeProof } = require('../server/lib/builds');
+const tree = require('../app/tree');
+const folder = require('../app/folder');
+const { createRemoteStore } = require('../app/remote');
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const sorted = (list) => [...list].sort();
+const sameSet = (a, b) => same(sorted(a), sorted(b));
 
 (async () => {
 // ---- decisions of official builds ----
@@ -200,6 +205,298 @@ await t.scenario('Sign-in hand-over, token, sign-out and the account page, witho
   config.token = undefined;
   welcomed.welcome({ plan: 'pro', limit: null, account: { name: 'A', email: 'a@b.c', avatar: null }, billing: true, prices: null, signed_out: false });
   t.check(welcomed.state().signedIn === false && welcomed.state().account === null && welcomed.state().plan === 'pro', 'an account in a welcome is only shown while there is a token for it');
+});
+
+// ---- names, the list of excluded paths, and the tree (app/tree.js) ----
+
+await t.scenario('Names that Windows cannot store are refused, whatever the other side sends', async () => {
+  const fine = ['a.txt', 'dir/sub/file.name.ext', 'my file.txt', 'é/ü.txt', 'console.txt', 'COM10', 'communication.log', 'nullable', 'lpt', 'a.b.c', '.hidden', 'x/.gitignore', 'a b/c d.e', 'COM0.txt'];
+  const wrong = fine.filter((p) => tree.unsafePath(p) !== null);
+  t.check(!wrong.length, `ordinary names are fine, also ones that only look like device names${wrong.length ? ` (refused: ${wrong})` : ''}`);
+
+  const refused = [
+    // device names, with or without an extension, in any folder
+    'CON', 'con.txt', 'Nul', 'nul.tar.gz', 'COM1', 'com9.txt', 'LPT1', 'lpt9.log', 'AUX', 'PRN.txt', 'sub/CON/x.txt', 'sub/aux.c', 'CON .txt',
+    // characters Windows does not allow; ":" would write an alternate data stream
+    'a:b.txt', 'a.txt:stream', 'a.txt::$DATA', 'x<y', 'x>y', 'a"b', 'a|b', 'a?b', 'a*b', 'a\u0001b', 'tab\tname', 'sub/new\nline',
+    // names Windows would change by itself
+    'name.', 'name ', 'dir /x.txt', 'a./b', '...',
+    // not a path inside a folder
+    '', '.', '..', 'a/../b', 'a/./b', 'a//b', '/abs', '/', 'a/', 'C:/x', 'C:x', 'a\\b', '..\\x', '\\\\server\\share',
+    // other trouble
+    'x'.repeat(256), 'file.fspart', 'a/b.5-6.fspart',
+  ];
+  const accepted = refused.filter((p) => tree.unsafePath(p) === null);
+  t.check(!accepted.length, `${refused.length} names that are trouble on Windows are refused${accepted.length ? ` (accepted: ${JSON.stringify(accepted)})` : ''}`);
+  t.check([undefined, null, 5, {}, ['a']].every((p) => typeof tree.unsafePath(p) === 'string'), 'anything that is not a path is refused too');
+  t.check(/reserved/.test(tree.unsafePath('NUL.txt')) && /character/.test(tree.unsafePath('a:b')) && /dot or a space/.test(tree.unsafePath('a.')) && /absolute/.test(tree.unsafePath('/etc/passwd')), 'and the reason is said in words');
+
+  const entries = tree.validEntries([
+    { path: 'a', size: 1, mtime: 2 }, { path: 'a', size: 9, mtime: 9 }, { path: 'b', size: -1, mtime: 1 }, { path: 'c', size: 1.5, mtime: 1 }, { path: 'd', size: 1, mtime: NaN },
+    { path: 5, size: 1, mtime: 1 }, null, 'x', { path: 'e', size: 2 ** 60, mtime: 1 }, { path: 'f', size: 1, mtime: 1e30 }, { path: 'g', size: 0, mtime: 0, extra: 'x' },
+  ]);
+  t.check(same(entries, [{ path: 'a', size: 1, mtime: 2 }, { path: 'g', size: 0, mtime: 0 }]), 'a list from the other side keeps only entries with a path, a size and a time, and a path only once');
+  t.check(same(tree.validEntries('nonsense'), []) && same(tree.validEntries(undefined), []), 'and a list that is no list is empty');
+  t.check(tree.upToDate({ size: 5, mtime: 10000 }, { size: 5, mtime: 11999 }) && !tree.upToDate({ size: 5, mtime: 10000 }, { size: 5, mtime: 12001 }) && !tree.upToDate({ size: 5, mtime: 1 }, { size: 6, mtime: 1 }) && !tree.upToDate({ size: 5, mtime: 1 }, undefined), 'a file is up to date with the same size and a modified time within 2 seconds');
+});
+
+await t.scenario('The list of excluded paths: files, whole folders, and old plain lists', async () => {
+  const set = (...entries) => new Set(entries);
+  t.check(tree.isExcluded(set('a/b.txt'), 'a/b.txt') && !tree.isExcluded(set('a/b.txt'), 'a/b.txt.bak') && !tree.isExcluded(set('a/b.txt'), 'a/c.txt'), 'a file entry excludes that file only (an old config is a plain list of these)');
+  t.check(tree.isExcluded(set('a/'), 'a/b.txt') && tree.isExcluded(set('a/'), 'a/b/c/d.txt') && !tree.isExcluded(set('a/'), 'ab.txt') && !tree.isExcluded(set('a/'), 'a.txt') && !tree.isExcluded(set('a/b/'), 'a/bc.txt') && !tree.isExcluded(set('a/b/'), 'a/c/b/x.txt'), 'a folder entry (with "/" at the end) excludes everything inside it, at any depth, and nothing that merely starts like it');
+  t.check(!tree.isExcluded(set(), 'a/b.txt') && !tree.isExcluded(set('x/', 'y.txt'), 'new/file.txt'), 'everything else is wanted, files that appear later included');
+
+  const files = [
+    ['games/a/1.txt', 10], ['games/a/2.txt', 20], ['games/b/3.txt', 30], ['games/c.txt', 40], ['other.txt', 5],
+  ].map(([path, size]) => ({ path, size, mtime: 1000 }));
+  const built = tree.build(files);
+  const node = (key) => tree.find(built.root, key);
+  const choose = (...entries) => tree.choose(built.root, new Set(entries));
+
+  // the example of the brief: tick one file in an excluded folder
+  let list = tree.setWanted(['games/'], node('games/a/1.txt'), true);
+  t.check(sameSet(list, ['games/b/', 'games/c.txt', 'games/a/2.txt']), `ticking one file in an excluded folder replaces the folder by entries for the rest, level by level (${JSON.stringify(list)})`);
+  choose(...list);
+  t.check(node('games/').state === 'mixed' && node('games/a/').state === 'mixed' && node('games/b/').state === 'none' && node('games/a/1.txt').wanted && !node('games/a/2.txt').wanted && node('other.txt').wanted, 'and the folders say mixed, none and all as they should');
+  t.check(tree.isExcluded(new Set(list), 'games/b/new.txt') && tree.isExcluded(new Set(list), 'games/c.txt') && !tree.isExcluded(new Set(list), 'games/new.txt'), 'files that appear later in a folder that stays excluded stay excluded');
+
+  t.check(sameSet(tree.setWanted(['other.txt'], node('games/b/'), false), ['other.txt', 'games/b/']), 'unticking a folder excludes the folder as a whole');
+  t.check(sameSet(tree.setWanted(['games/a/1.txt', 'games/b/3.txt', 'x'], node('games/'), false), ['x', 'games/']), 'and takes out the entries that are inside it');
+  t.check(sameSet(tree.setWanted(['games/a/1.txt', 'games/b/', 'x'], node('games/'), true), ['x']), 'ticking a folder takes out everything inside it, and leaves the rest of the list alone');
+  const already = ['games/'];
+  t.check(tree.setWanted(already, node('games/a/2.txt'), false) === already, 'unticking what is excluded already changes nothing');
+  t.check(sameSet(tree.setWanted([], node('games/a/2.txt'), false), ['games/a/2.txt']) && sameSet(tree.setWanted(['games/a/2.txt'], node('games/a/2.txt'), true), []), 'a file is excluded and wanted again by its own entry');
+
+  t.check(sameSet(tree.selectNone(['games/a/1.txt', 'gone.txt', 'gone/x.txt', 'games/gone.txt'], built.root), ['games/', 'other.txt', 'gone.txt', 'gone/x.txt']), 'select none is one entry for each top-level folder and file, and keeps the entries for what is no longer there');
+  t.check(sameSet(tree.selectAll(['games/', 'other.txt', 'gone.txt', 'gone/', 'games/a/1.txt'], built.root), ['gone.txt', 'gone/']), 'select all takes out what is in the tree, and keeps the entries for what is no longer there');
+
+  tree.choose(built.root, new Set(['games/a/1.txt', 'other.txt']));
+  t.check(built.root.count === 5 && built.root.wantedCount === 3 && built.root.wantedSize === 90 && built.root.size === 105 && node('games/').wantedCount === 3 && node('games/a/').state === 'mixed', 'an old plain list of files works as before: counts and sizes of what is wanted');
+  const local = new Map([['games/a/1.txt', { size: 10, mtime: 1500 }], ['games/a/2.txt', { size: 21, mtime: 1000 }], ['games/c.txt', { size: 40, mtime: 99999 }]]);
+  tree.markDone(built.root, local);
+  t.check(node('games/a/1.txt').done && !node('games/a/2.txt').done && !node('games/c.txt').done && node('games/a/').done === 1 && node('games/').done === 1 && built.root.done === 1, 'the "downloaded" marks count what is on this disk with the right size and time, per folder');
+});
+
+await t.scenario('The list of excluded paths always means what the person ticked (randomized)', async () => {
+  // a small deterministic generator, so that a failure can be played again
+  const rng = (seed) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+  const problems = [];
+  let operations = 0;
+  for (let seed = 1; seed <= 300 && problems.length < 5; seed++) {
+    const rand = rng(seed);
+    const pick = (list) => list[Math.floor(rand() * list.length)];
+    const files = [];
+    const grow = (prefix, depth) => {
+      for (let k = 0, n = 1 + Math.floor(rand() * 4); k < n; k++) {
+        if (depth < 3 && rand() < 0.45) grow(`${prefix}d${k}/`, depth + 1);
+        else files.push({ path: `${prefix}f${k}.txt`, size: 1 + Math.floor(rand() * 100), mtime: 1 });
+      }
+    };
+    grow('', 0);
+    const built = tree.build(files);
+    const nodes = [];
+    (function visit(dir) {
+      for (const kid of dir.kids.values()) {
+        nodes.push(kid);
+        if (kid.dir) visit(kid);
+      }
+    })(built.root);
+    const dirs = nodes.filter((n) => n.dir);
+    // where the person starts: some folders and files excluded, an entry for a file that is gone
+    let list = nodes.filter(() => rand() < 0.25).map(tree.entryOf).concat(rand() < 0.5 ? ['gone/x.txt'] : []);
+    const under = (n, p) => p.path === n.path || p.path.startsWith(`${n.path}/`);
+    const wantedMap = () => new Map(files.map((f) => [f.path, !tree.isExcluded(new Set(list), f.path)]));
+    const newFileWanted = () => new Map(dirs.map((d) => [d.path, !tree.isExcluded(new Set(list), `${d.path}/zz-new.txt`)]));
+    let model = wantedMap();
+    for (let step = 0; step < 25; step++) {
+      const before = newFileWanted();
+      const beforeList = list;
+      const roll = rand();
+      let label;
+      let target = null;
+      let on = false;
+      if (roll < 0.1) {
+        on = roll < 0.05;
+        label = on ? 'select all' : 'select none';
+        list = on ? tree.selectAll(list, built.root) : tree.selectNone(list, built.root);
+        for (const f of files) model.set(f.path, on);
+      } else {
+        target = pick(nodes);
+        on = rand() < 0.5;
+        label = `${on ? 'tick' : 'untick'} ${tree.entryOf(target)}`;
+        list = tree.setWanted(list, target, on);
+        for (const f of files) if (under(target, f)) model.set(f.path, on);
+      }
+      operations++;
+      const where = `seed ${seed}, step ${step}: ${label} on ${JSON.stringify(beforeList)} gives ${JSON.stringify(list)}`;
+      const now = wantedMap();
+      if ([...model].some(([path, wanted]) => now.get(path) !== wanted)) problems.push(`files differ, ${where}`);
+      if (new Set(list).size !== list.length || list.some((e) => typeof e !== 'string' || e === '')) problems.push(`bad list, ${where}`);
+      // what appears later: unchanged outside the ticked node and its parents, and as ticked inside it
+      const after = newFileWanted();
+      for (const d of dirs) {
+        const expected = !target ? (roll < 0.05 ? true : false) : under(target, d) ? on : target.path.startsWith(`${d.path}/`) ? null : before.get(d.path);
+        if (expected !== null && after.get(d.path) !== expected) problems.push(`a new file in ${d.path}/ is ${after.get(d.path) ? 'wanted' : 'excluded'}, ${where}`);
+      }
+      tree.choose(built.root, new Set(list));
+      for (const d of dirs) {
+        const count = files.filter((f) => under(d, f) && model.get(f.path)).length;
+        const all = files.filter((f) => under(d, f)).length;
+        if (d.wantedCount !== count || d.state !== (count === 0 ? 'none' : count === all ? 'all' : 'mixed')) problems.push(`state of ${d.path}/ is ${d.state} (${d.wantedCount}), ${where}`);
+      }
+      // the model must also hold when the same list is read again from nothing
+      model = wantedMap();
+      if (problems.length >= 5) break;
+    }
+  }
+  t.check(!problems.length, `${operations} random ticks and unticks on 300 random trees: what is wanted is what was ticked, new files follow the folder, folder states are right${problems.length ? `\n      ${problems.join('\n      ')}` : ''}`);
+});
+
+await t.scenario('The tree: totals, bad names, paging of big folders, order', async () => {
+  const f = (path, size = 1) => ({ path, size, mtime: 1 });
+  const built = tree.build([f('games/a/1.txt', 10), f('games/b.txt', 20), f('CON/x.txt'), f('ok/aux.txt'), f('a'), f('a/b.txt'), f('x:y'), f('dup', 5), f('top.txt', 7)]);
+  t.check(built.root.count === 5 && built.root.size === 10 + 20 + 1 + 5 + 7 && built.root.kids.get('games').count === 2, 'the tree counts the files and sizes of every folder');
+  t.check(sameSet(built.bad.map((b) => b.path), ['CON/x.txt', 'ok/aux.txt', 'x:y', 'a/b.txt']) && built.bad.every((b) => typeof b.why === 'string' && b.why.length > 5), 'files with names that cannot be written (and one that is in the way of a folder) are kept out of it, with the reason');
+
+  const names = ['file10.txt', 'File1.txt', 'file2.txt', 'Zeta', 'alpha'].map((n) => f(`dir/${n}`));
+  const order = tree.sortedKids(tree.build([...names, f('dir/sub/x.txt')]).root.kids.get('dir')).map((n) => n.name);
+  t.check(same(order, ['sub', 'alpha', 'File1.txt', 'file2.txt', 'file10.txt', 'Zeta']), `folders come first, then names in natural order (${order})`);
+
+  // 650 files in one folder and in the top level: never more than 300 rows at once
+  const many = Array.from({ length: 650 }, (_, i) => f(`big/file${i}.bin`));
+  const big = tree.build([...many, ...Array.from({ length: 650 }, (_, i) => f(`top${i}.bin`))]);
+  const row = (open = [], shown = []) => tree.rows(big, new Set(open), new Map(shown));
+  const top = row();
+  t.check(top.length === 301 && top[0].node.name === 'big' && top[300].more === big.root && top[300].hidden === 351, 'a folder shows its first 300 entries and then one "more" row that says how many are left');
+  const open = row(['big']);
+  t.check(open.length === 301 + 300 + 1 && open[1].depth === 1 && open[301].more.path === 'big' && open[301].hidden === 350, 'an open folder is the same one level down');
+  t.check(row(['big'], [['big', 600]]).filter((r) => r.depth === 1).length === 601 && row(['big'], [['big', 900]]).filter((r) => r.more && r.more.path === 'big').length === 0, '"Show more" adds 300 at a time, and the "more" row goes when everything is shown');
+  t.check(tree.rowKey(top[300]) !== tree.rowKey(open[301]) && tree.rowKey(top[0]) === 'big/' && tree.rowKey(top[1]) === 'top0.bin', 'every row has its own key, a folder with "/" at the end');
+
+  // a big tree is built, chosen and listed in a blink
+  const huge = Array.from({ length: 30000 }, (_, i) => f(`d${i % 40}/s${i % 7}/file${i}.dat`, i));
+  const t0 = process.hrtime.bigint();
+  const hugeBuilt = tree.build(huge);
+  tree.choose(hugeBuilt.root, new Set(['d3/', 'd5/s2/']));
+  tree.markDone(hugeBuilt.root, new Map());
+  const list = tree.rows(hugeBuilt, new Set(['d0', 'd0/s0']), new Map());
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  t.check(hugeBuilt.root.count === 30000 && list.length > 40 && ms < 1500, `30,000 files: tree built, chosen and the rows made in ${ms.toFixed(0)} ms`);
+});
+
+// ---- folders on disk (app/folder.js) and the owner's file lists (app/remote.js) ----
+
+await t.scenario('Listing, counting, links, and what may be shared', async () => {
+  const base = t.resetDir(path.join(t.tmpRoot, 'unit-folder'));
+  const share = path.join(base, 'share');
+  const outside = path.join(base, 'outside');
+  const put = (file, text = 'x') => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+  put(path.join(share, 'a.txt'), 'aaa');
+  put(path.join(share, 'sub', 'b.txt'), 'bb');
+  put(path.join(share, 'sub', 'deeper', 'c.txt'), 'c');
+  put(path.join(share, 'part.5-6.fspart'), 'half');
+  fs.mkdirSync(path.join(share, 'empty'));
+  put(path.join(outside, 'secret.txt'), 'secret');
+  // a junction needs no rights; a symlink to a file needs developer mode, so it is tried
+  fs.symlinkSync(outside, path.join(share, 'link'), 'junction');
+  let fileLink = false;
+  try {
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(share, 'secret-link.txt'), 'file');
+    fileLink = true;
+  } catch {}
+
+  const listed = await folder.listFiles(share);
+  t.check(same(listed.files.map((x) => x.path), ['a.txt', 'sub/b.txt', 'sub/deeper/c.txt']) && listed.missing === null, `the listing has the files, sorted, with "/" in the paths, and skips unfinished downloads, empty folders, a junction${fileLink ? ' and a symlink' : ''}`);
+  t.check(listed.files[0].size === 3 && Math.abs(listed.files[0].mtime - fs.statSync(path.join(share, 'a.txt')).mtimeMs) < 1000, 'with size and modified time');
+  t.check(same(await folder.listFiles(path.join(base, 'nothing-here')), { files: [], missing: 'missing' }), 'a folder that is not there is "missing", which is not an empty folder');
+  t.check((await folder.listFiles(path.join(share, 'empty'))).missing === null && same(await folder.listFiles(null), { files: [], missing: null }), 'an empty folder is empty, and a folder that does not exist yet is nothing');
+  t.check((await folder.listFiles(path.join(share, 'a.txt'))).missing === 'missing', 'and a file is no folder');
+
+  // reused for a few seconds; one walk for requests that come together
+  const lister = folder.createLister(150);
+  const first = lister.list('k', share);
+  t.check(first === lister.list('k', share), 'a listing that is running is the answer to everybody who asks meanwhile');
+  await first;
+  put(path.join(share, 'new.txt'));
+  t.check((await lister.list('k', share)).files.length === 3, 'a listing is reused for a few seconds');
+  t.check((await lister.list('k', share, { fresh: true })).files.length === 4, 'unless a new one is asked for');
+  t.check((await lister.list('k', path.join(share, 'sub'))).files.length === 2, 'another folder under the same key starts over');
+  await lister.list('k', share, { fresh: true });
+  fs.rmSync(path.join(share, 'new.txt'));
+  t.check((await lister.list('k', share)).files.length === 4, 'a file that is gone is still in the listing for those few seconds');
+  lister.invalidate('k');
+  t.check((await lister.list('k', share)).files.length === 3, 'and a folder that changed through the app is listed again at once');
+  put(path.join(share, 'later.txt'));
+  await t.sleep(200);
+  t.check((await lister.list('k', share)).files.length === 4, 'as it is when the time is up');
+  fs.rmSync(path.join(share, 'later.txt'));
+
+  for (let i = 0; i < 40; i++) put(path.join(share, 'many', `f${i}.txt`));
+  t.check((await folder.countFiles(share, 10)) === 11 && (await folder.countFiles(share, 1000)) === 43, 'counting stops above the limit, and counts everything below it, links skipped');
+  t.check((await folder.countFiles(share, 43)) === 43 && (await folder.countFiles(share, 42)) === 43 && folder.MANY_FILES === 20000, 'a folder with as many files as the limit is not over it, one more is; the limit is 20,000');
+
+  // what may be shared
+  const places = { home: 'C:\\Users\\ada', windir: 'C:\\Windows', userData: 'C:\\Users\\ada\\AppData\\Roaming\\FriendsShare', baseDir: 'C:\\Users\\ada\\Documents\\FriendsShare' };
+  const why = (dir) => folder.unsafeToShare(dir, places);
+  t.check(/Windows/.test(why('C:\\Windows')) && /Windows/.test(why('c:\\windows\\System32')) && why('C:\\WindowsApps') === null, 'the Windows folder, and what is in it, is refused (and a folder that only starts with the same letters is not)');
+  t.check(/user folder/.test(why('C:\\Users\\ada')) && /user folder/.test(why('c:\\users\\ADA')), 'so is the user\'s own folder, whatever the case of the letters');
+  t.check([why('C:\\Users\\ada\\AppData\\Roaming\\FriendsShare'), why('C:\\Users\\ada\\AppData\\Roaming'), why('C:\\Users\\ada\\AppData'), why('C:\\Users')].every((m) => /own settings/.test(m)), 'a folder that contains the settings of this app is refused, and says why');
+  t.check(/own settings/.test(why('C:\\Users\\ada\\AppData\\Roaming\\FriendsShare\\remote')), 'and one inside them');
+  t.check(/friends are stored/.test(why('C:\\Users\\ada\\Documents')) && /friends are stored/.test(why('C:\\Users\\ada\\Documents\\FriendsShare')), 'a folder that contains the folder where friends\' downloads are stored is refused, and says why');
+  t.check(why('C:\\Users\\ada\\Documents\\Photos') === null && why('D:\\Games') === null && why('C:\\Users\\ada\\Documents\\FriendsShare\\Holiday') === null && why('C:\\Users\\ada\\Desktop') === null, 'other folders are fine, a folder from a friend included');
+
+  // a request for a file has to lead to a real file inside the folder
+  const real = (rel) => folder.realFile(share, rel).then((p) => p, (err) => err);
+  const ok = await real('sub/b.txt');
+  t.check(typeof ok === 'string' && ok.toLowerCase() === path.join(fs.realpathSync(share), 'sub', 'b.txt').toLowerCase(), 'a file in the folder is served');
+  const through = await real('link/secret.txt');
+  t.check(through instanceof Error && through.tag === 'read' && /not inside/.test(through.message), 'a file behind a junction in the folder is not (it is outside, and the text of the path would not tell)');
+  if (fileLink) t.check((await real('secret-link.txt')).tag === 'read', 'nor is a file that is a symlink to something outside');
+  const tags = await Promise.all(['../outside/secret.txt', 'sub/../../outside/secret.txt', 'a.txt:stream', 'NUL', 'sub/con.txt', '/etc/passwd', 'C:/Windows/win.ini', 'sub\\b.txt', '', 'nothing.txt', 'sub/', 'sub/nothing/x', 5].map((r) => real(r).then((e) => e.tag)));
+  t.check(tags.every((tag) => tag === 'read'), `".." and "name:stream", device names, absolute paths, a missing file: every one is refused as a problem with that file only (${tags})`);
+  fs.renameSync(share, path.join(base, 'moved'));
+  t.check((await real('a.txt')).tag === 'gone', 'a folder that is not there any more is "gone", which is not a problem with one file');
+  fs.renameSync(path.join(base, 'moved'), share);
+  fs.rmSync(path.join(share, 'link'), { force: true });
+  fs.rmSync(path.join(share, 'secret-link.txt'), { force: true });
+  t.check(fs.existsSync(path.join(outside, 'secret.txt')), 'removing the junction left what it pointed to alone');
+});
+
+await t.scenario('The owner\'s file list is stored apart from the settings, safely', async () => {
+  const dir = t.resetDir(path.join(t.tmpRoot, 'unit-remote'));
+  const store = createRemoteStore(path.join(dir, 'remote'));
+  const list = Array.from({ length: 2000 }, (_, i) => ({ path: `d${i % 9}/file ${i}.bin`, size: i, mtime: 1700000000000 + i }));
+  t.check((await store.read('g1')) === null, 'a folder that has no list has none');
+  await store.write('g1', [...list, { path: 'bad' }, null]);
+  const back = await store.read('g1');
+  t.check(back.files.length === 2000 && same(back.files[1999], list[1999]) && back.at > 0, 'a list is written and read back, without the entries that make no sense');
+  t.check(fs.readdirSync(path.join(dir, 'remote')).join() === 'g1.json', 'it is one file per folder, and no temporary file is left');
+  // writes that come together: every one finishes, and the last is the one that stays
+  await Promise.all([1, 2, 3, 4, 5].map((n) => store.write('g1', list.slice(0, n * 10))));
+  t.check((await store.read('g1')).files.length === 50 && fs.readdirSync(path.join(dir, 'remote')).join() === 'g1.json', 'writes that come together do not trample each other');
+  fs.writeFileSync(path.join(dir, 'remote', 'g2.json'), '{"files": [{"path":');
+  t.check((await store.read('g2')) === null, 'a damaged file is no list');
+  fs.writeFileSync(path.join(dir, 'remote', 'old.json.123-4.tmp'), 'x');
+  await store.tidy();
+  t.check(!fs.existsSync(path.join(dir, 'remote', 'old.json.123-4.tmp')), 'a temporary file from a write that was cut short is cleaned up');
+  await store.write('..\\..\\evil', list.slice(0, 1));
+  t.check(fs.readdirSync(dir).join() === 'remote' && (await store.read('..\\..\\evil')).files.length === 1, 'the id of a folder cannot make the file go anywhere else');
+  await store.remove('g1');
+  t.check((await store.read('g1')) === null && !fs.existsSync(path.join(dir, 'remote', 'g1.json')), 'removing a folder removes its list');
+
+  // what config.json held until now
+  const shares = [{ id: 'a', remote: list.slice(0, 5), chosen: true }, { id: 'b' }, { id: 'c', remote: 'garbage' }, { id: 'd', remote: [] }];
+  t.check((await store.migrate(shares)) === true && shares.every((s) => !('remote' in s)) && shares[0].chosen === true, 'lists in the old place are taken out of the shares');
+  t.check((await store.read('a')).files.length === 5 && (await store.read('d')).files.length === 0 && (await store.read('c')) === null, 'and are in files of their own');
+  t.check((await store.migrate(shares)) === false, 'which is done once');
 });
 
 t.finish();
