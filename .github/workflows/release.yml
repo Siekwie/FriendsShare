@@ -1,0 +1,29 @@
+# Builds FriendsShare.exe and publishes it as a GitHub release whenever a version tag is pushed:
+#   git tag v1.2.0 && git push origin v1.2.0
+# Friends always get the newest build from
+#   https://github.com/Siekwie/FriendsShare/releases/latest/download/FriendsShare.exe
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # the app's version is the tag
+      - run: npm version "$("${{ github.ref_name }}".TrimStart('v'))" --no-git-tag-version --allow-same-version
+      - run: npm run dist
+      - run: gh release create "${{ github.ref_name }}" dist/FriendsShare.exe --title "FriendsShare ${{ github.ref_name }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

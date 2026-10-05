@@ -10,7 +10,7 @@
     "start": "electron .",
     "server": "node server/server.js",
     "test": "node test/e2e.js",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win portable --publish never"
   },
   "devDependencies": {
     "electron": "^38.0.0",
