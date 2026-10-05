@@ -11,7 +11,15 @@ const YEARLY = 'price_yearly_fs';
 const OPTIONS = { env: BILLING_ENV };
 const stripeCalls = (h) => h.net.calling((c) => c.host === 'api.stripe.com');
 const alerts = (h) => h.logs.filter((line) => line.startsWith('[billing] ALERT'));
+const notices = (h) => h.logs.filter((line) => line.startsWith('[billing] NOTICE'));
+const calls = (h) => stripeCalls(h).map((c) => `${c.method} ${c.path}`);
 const nowSeconds = (h) => Math.floor(h.clock.t / 1000);
+// the lines for a key that needs a person's approval before anything is cancelled
+const NOTICE = (id, customer) =>
+  `[billing] NOTICE subscription ${id} of customer ${customer} ends at its period end, because its immediate cancellation is waiting for approval in Stripe (Settings > Approvals).`;
+const WAITING_ALERT = (id, customer, reason) =>
+  `[billing] ALERT subscription ${id} of customer ${customer} could not be attached to an account (${reason}) and could not be cancelled yet: ` +
+  "its cancellation is waiting for the owner's approval in Stripe (Settings > Approvals > Requests). Refund in Stripe dashboard: its first payment has to be given back by hand.";
 
 // a signed event, delivered the way Stripe delivers it: no cookie, no Origin
 function webhook(h, event, options = {}) {
@@ -755,6 +763,127 @@ test('if Stripe will not cancel the subscription the webhook answers with an err
     assert.equal(alerts(h).length, 1);
   }));
 
+test('when Stripe wants approval to cancel a subscription that no account matches, the owner is told once, the webhook is answered, and nothing is asked again', () =>
+  withServer(OPTIONS, async (h) => {
+    h.net.stripe.approval.cancel = true;
+    const ghost = () => subscription({ id: 'sub_g', customer: 'cus_g', price: MONTHLY, accountId: 'ffffffffffffffff', periodEnd: nowSeconds(h) + 86400 });
+    h.net.stripe.subscriptions.sub_g = ghost();
+
+    const first = await webhook(h, subscriptionEvent('customer.subscription.created', ghost()));
+    assert.equal(first.status, 200, 'no failure for Stripe to deliver the event again for');
+    // one line that cannot be missed: the ids, that it waits for the owner and where, and that the money has to be given back by hand
+    assert.deepEqual(alerts(h), [WAITING_ALERT('sub_g', 'cus_g', 'no account matches')]);
+    assert.ok(!alerts(h)[0].includes('was cancelled'));
+    assert.equal(h.net.stripe.subscriptions.sub_g.status, 'active', 'it waits for the owner');
+    assert.deepEqual(h.net.stripe.approvals, [{ kind: 'cancel', subscription: 'sub_g' }]);
+
+    // later events about the same subscription, however they come: no call, no line
+    const before = stripeCalls(h).length;
+    for (const event of [
+      subscriptionEvent('customer.subscription.updated', ghost()),
+      subscriptionEvent('customer.subscription.created', ghost()),
+      checkoutEvent('ffffffffffffffff', { subscription: 'sub_g', customer: 'cus_g' }),
+    ]) {
+      assert.equal((await webhook(h, event)).status, 200);
+    }
+    assert.equal(stripeCalls(h).length, before, 'Stripe was asked nothing');
+    assert.equal(alerts(h).length, 1);
+    assert.equal(h.net.stripe.approvals.length, 1);
+
+    // another subscription is another matter, and is told about as well
+    h.net.stripe.subscriptions.sub_h = { ...ghost(), id: 'sub_h', customer: 'cus_h' };
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.created', h.net.stripe.subscriptions.sub_h))).status, 200);
+    assert.deepEqual(alerts(h).map((line) => line.slice(0, 50)), [WAITING_ALERT('sub_g', 'cus_g', 'no account matches').slice(0, 50), WAITING_ALERT('sub_h', 'cus_h', 'no account matches').slice(0, 50)]);
+    assert.deepEqual(h.net.stripe.approvals.map((a) => a.subscription), ['sub_g', 'sub_h']);
+  }));
+
+test('when Stripe wants approval to cancel a second running subscription, the account keeps the first and the owner is told once', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    const first = stripeHas(h, accountId, { id: 'sub_2', customer: 'cus_1' });
+    await webhook(h, subscriptionEvent('customer.subscription.created', first));
+    const second = stripeHas(h, accountId, { id: 'sub_3', customer: 'cus_3', price: YEARLY, days: 365 });
+    h.net.stripe.approval.cancel = new Set(['sub_3']);
+
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.created', second))).status, 200);
+    assert.deepEqual(alerts(h), [WAITING_ALERT('sub_3', 'cus_3', 'the account already has another running subscription')]);
+    assert.equal(h.db.get('SELECT stripe_subscription_id AS id FROM accounts').id, 'sub_2');
+    assert.equal((await b.get('/api/me')).json.subscription.interval, 'month');
+    assert.equal(h.net.stripe.subscriptions.sub_3.status, 'active', 'it waits for the owner');
+
+    // the same subscription again, by its own event and by its checkout: nothing more is asked or said
+    const deletes = () => stripeCalls(h).filter((c) => c.method === 'DELETE').length;
+    assert.equal(deletes(), 1);
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.updated', second))).status, 200);
+    assert.equal((await webhook(h, checkoutEvent(accountId, { subscription: 'sub_3', customer: 'cus_3' }))).status, 200);
+    assert.equal(deletes(), 1);
+    assert.equal(alerts(h).length, 1);
+    assert.deepEqual(h.net.stripe.approvals.map((a) => a.subscription), ['sub_3']);
+    assert.equal(h.db.get('SELECT stripe_subscription_id AS id FROM accounts').id, 'sub_2');
+  }));
+
+test('the checkout of a second subscription that waits for approval is answered as handled as well', () =>
+  withServer(OPTIONS, async (h) => {
+    const { accountId } = await member(h);
+    const first = stripeHas(h, accountId, { id: 'sub_2', customer: 'cus_1' });
+    await webhook(h, subscriptionEvent('customer.subscription.created', first));
+    stripeHas(h, accountId, { id: 'sub_3', customer: 'cus_3', price: YEARLY, days: 365 });
+    h.net.stripe.approval.cancel = true;
+
+    assert.equal((await webhook(h, checkoutEvent(accountId, { subscription: 'sub_3', customer: 'cus_3' }))).status, 200);
+    assert.deepEqual(alerts(h), [WAITING_ALERT('sub_3', 'cus_3', 'the account already has another running subscription')]);
+    assert.equal(h.db.get('SELECT stripe_subscription_id AS id, stripe_customer_id AS c FROM accounts').id, 'sub_2');
+    // and a purchase after the account was deleted
+    assert.equal((await webhook(h, checkoutEvent('ffffffffffffffff', { subscription: 'sub_x', customer: 'cus_x' }))).status, 200);
+    assert.equal(alerts(h).length, 2);
+    assert.match(alerts(h)[1], /^\[billing\] ALERT subscription sub_x of customer cus_x could not be attached to an account \(the account does not exist \(any more\)\) and could not be cancelled yet: its cancellation is waiting for the owner's approval in Stripe \(Settings > Approvals > Requests\)\./);
+  }));
+
+test('a subscription that is over, or ends with its paid period, is never cancelled: no call and no alert', () =>
+  withServer(OPTIONS, async (h) => {
+    h.net.stripe.approval.cancel = true; // a cancel call would show up as a request for the owner
+    const ghost = (extra) => ({ ...subscription({ id: 'sub_g', customer: 'cus_g', price: MONTHLY, accountId: 'ffffffffffffffff', periodEnd: nowSeconds(h) + 86400 }), ...extra });
+    for (const [what, extra] of Object.entries({
+      'set to end with the period': { cancel_at_period_end: true },
+      'set to end at a date': { cancel_at: nowSeconds(h) + 86400 },
+      cancelled: { status: 'canceled' },
+      'expired before it was paid': { status: 'incomplete_expired' },
+    })) {
+      h.net.stripe.subscriptions.sub_g = ghost(extra);
+      for (const type of ['customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted']) {
+        assert.equal((await webhook(h, subscriptionEvent(type, ghost(extra)))).status, 200, `${what}: ${type}`);
+      }
+    }
+    // what Stripe says now is what counts, not what the event said
+    h.net.stripe.subscriptions.sub_g = ghost({ cancel_at_period_end: true });
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.updated', ghost({})))).status, 200);
+    assert.equal(stripeCalls(h).filter((c) => c.method !== 'GET').length, 0, 'nothing was cancelled or changed');
+    assert.deepEqual(h.net.stripe.approvals, []);
+    assert.deepEqual(alerts(h), []);
+    assert.ok(h.logs.some((line) => line.includes('could not be matched to an account')));
+
+    // the same when it is the checkout that tells of such a subscription, for an account that is gone
+    for (const extra of [{ cancel_at_period_end: true }, { status: 'canceled' }]) {
+      h.net.stripe.subscriptions.sub_g = ghost(extra);
+      assert.equal((await webhook(h, checkoutEvent('ffffffffffffffff', { subscription: 'sub_g', customer: 'cus_g' }))).status, 200);
+    }
+    assert.equal(stripeCalls(h).filter((c) => c.method !== 'GET').length, 0);
+    assert.equal(h.logs.filter((line) => line.includes('subscription sub_g of ours is not attached to an account, but it is over or ends with its paid period')).length, 2);
+
+    // nor is a second subscription of an account when it ends by itself anyway, by its own event or by its checkout
+    const { accountId } = await member(h);
+    const first = stripeHas(h, accountId, { id: 'sub_2', customer: 'cus_1' });
+    await webhook(h, subscriptionEvent('customer.subscription.created', first));
+    const second = stripeHas(h, accountId, { id: 'sub_3', customer: 'cus_3', cancelAtPeriodEnd: true });
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.created', second))).status, 200);
+    stripeHas(h, accountId, { id: 'sub_4', customer: 'cus_4', cancelAtPeriodEnd: true });
+    assert.equal((await webhook(h, checkoutEvent(accountId, { subscription: 'sub_4', customer: 'cus_4' }))).status, 200);
+    assert.equal(stripeCalls(h).filter((c) => c.method !== 'GET').length, 0);
+    assert.equal(h.db.get('SELECT stripe_subscription_id AS id FROM accounts').id, 'sub_2', 'the account keeps what it had');
+    assert.deepEqual(alerts(h), []);
+    assert.deepEqual(h.net.stripe.approvals, []);
+  }));
+
 test('a subscription that Stripe no longer knows is still reported when it has to be cancelled', () =>
   withServer(OPTIONS, async (h) => {
     // not in the fake: DELETE answers "No such subscription", as Stripe does for one that ended already
@@ -912,6 +1041,191 @@ test('an account without a running subscription is deleted without calling Strip
     makePro(h, ended.accountId, { status: 'canceled' });
     assert.equal((await ended.b.post('/api/account/delete')).status, 204);
     assert.equal(stripeCalls(h).length, 0);
+  }));
+
+// ---- a key that needs a person's approval before anything is cancelled ----
+
+test('a subscription that is set to end already, or is over, is not cancelled again: the account is deleted without a call', () =>
+  withServer(OPTIONS, async (h) => {
+    // had a call been made, it would have made a request for the owner
+    h.net.stripe.approval = { cancel: true, update: true };
+    const ending = await member(h, { id: 1 });
+    makePro(h, ending.accountId, { cancelAtPeriodEnd: 1 });
+    h.net.stripe.subscriptions.sub_1 = { id: 'sub_1', status: 'active', cancel_at_period_end: true };
+    assert.equal((await ending.b.post('/api/account/delete')).status, 204);
+
+    const over = await member(h, { id: 2, name: 'Bob', email: 'bob@example.com' });
+    makePro(h, over.accountId, { status: 'canceled' });
+    assert.equal((await over.b.post('/api/account/delete')).status, 204);
+    const expired = await member(h, { id: 3, name: 'Cy', email: 'cy@example.com' });
+    makePro(h, expired.accountId, { status: 'incomplete_expired' });
+    assert.equal((await expired.b.post('/api/account/delete')).status, 204);
+    const free = await member(h, { id: 4, name: 'Di', email: 'di@example.com' });
+    assert.equal((await free.b.post('/api/account/delete')).status, 204);
+
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+    assert.deepEqual(calls(h), [], 'Stripe was asked nothing');
+    assert.deepEqual(h.net.stripe.approvals, []);
+    assert.deepEqual(notices(h), []);
+  }));
+
+test('when Stripe wants a person to approve the cancellation, the subscription is set to end with the paid period and the account is deleted', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    stripeHas(h, accountId);
+    makePro(h, accountId);
+    h.net.stripe.approval.cancel = true;
+
+    const res = await b.post('/api/account/delete');
+    assert.equal(res.status, 204);
+    // the cancellation first, as always; then, because it waits for a person, ending it with the paid period
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1']);
+    assert.deepEqual(stripeCalls(h)[1].form, { cancel_at_period_end: 'true' });
+    assert.equal(h.net.stripe.subscriptions.sub_1.status, 'active', 'it runs until the paid period is over');
+    assert.equal(h.net.stripe.subscriptions.sub_1.cancel_at_period_end, true, 'and then it does not renew');
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+    // one request waits for the owner, and one line says so, with nothing personal in it
+    assert.deepEqual(h.net.stripe.approvals, [{ kind: 'cancel', subscription: 'sub_1' }]);
+    assert.deepEqual(notices(h), [NOTICE('sub_1', 'cus_1')]);
+    assert.ok(!notices(h)[0].includes('ada@example.com') && !notices(h)[0].includes(accountId) && !notices(h)[0].includes('Ada'));
+    assert.deepEqual(alerts(h), []);
+
+    // Stripe then reports on the subscription of an account that is gone, and later its end: no reason to cancel it again
+    const before = stripeCalls(h).length;
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.updated', h.net.stripe.subscriptions.sub_1))).status, 200);
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.deleted', { ...h.net.stripe.subscriptions.sub_1, status: 'canceled' }))).status, 200);
+    assert.equal(stripeCalls(h).length, before);
+    assert.equal(h.net.stripe.approvals.length, 1);
+    assert.deepEqual(alerts(h), []);
+  }));
+
+test('if Stripe does not know the subscription when it is asked to end it, nothing is left to end and the account goes', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    makePro(h, accountId); // not in the fake's list: "No such subscription"
+    h.net.stripe.approval.cancel = true;
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1']);
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+    assert.deepEqual(notices(h), [], 'nothing is ending, so there is nothing to say');
+  }));
+
+test('when Stripe wants approval for ending it too, the account stays and the person is asked to end the subscription first', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    stripeHas(h, accountId);
+    makePro(h, accountId);
+    h.net.stripe.approval = { cancel: true, update: true };
+
+    const res = await b.post('/api/account/delete');
+    assert.equal(res.status, 409);
+    assert.equal(res.json.error, 'cancel_first');
+    assert.deepEqual(Object.keys(res.json).sort(), ['error', 'message']);
+    // a message that the website can show as it is
+    assert.match(res.json.message, /^[A-Z][^!]*\.$/);
+    assert.match(res.json.message, /could not be ended automatically/);
+    assert.match(res.json.message, /"Manage subscription"/);
+    assert.match(res.json.message, /not deleted/);
+    // nothing else changed: the account, its sign-in and its subscription are as they were
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 1);
+    assert.deepEqual(h.db.get('SELECT stripe_subscription_id AS id, sub_status AS status, sub_cancel_at_period_end AS ends FROM accounts'), { id: 'sub_1', status: 'active', ends: 0 });
+    assert.equal((await b.get('/api/me')).json.plan, 'pro', 'still signed in, still Pro');
+    assert.equal(h.net.stripe.subscriptions.sub_1.status, 'active');
+    assert.equal(h.net.stripe.subscriptions.sub_1.cancel_at_period_end, false);
+    assert.deepEqual(notices(h), []);
+    // the cause is in the log, in Stripe's codes and not in its words
+    assert.ok(h.logs.some((line) => line.includes('status=0 code=cancel_first after status=403 code=approval_required')));
+    assert.ok(!h.logs.join('\n').includes('human approval'));
+
+    // trying again asks Stripe for nothing more: one cancellation and one request to end it are all that were ever made
+    assert.equal((await b.post('/api/account/delete')).status, 409);
+    assert.equal((await b.post('/api/account/delete')).status, 409);
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1']);
+    assert.deepEqual(h.net.stripe.approvals.map((a) => a.kind), ['cancel', 'update']);
+
+    // the person ends it in the portal and Stripe tells us: then there is nothing left to ask, and the account goes
+    h.net.stripe.subscriptions.sub_1.cancel_at_period_end = true;
+    assert.equal((await webhook(h, subscriptionEvent('customer.subscription.updated', h.net.stripe.subscriptions.sub_1))).status, 200);
+    assert.equal(h.db.get('SELECT sub_cancel_at_period_end AS ends FROM accounts').ends, 1);
+    const before = stripeCalls(h).length;
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.equal(stripeCalls(h).length, before);
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+  }));
+
+test('once Stripe has asked for approval to cancel a subscription it is not asked again: a retry goes straight to ending it with the paid period', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    stripeHas(h, accountId);
+    makePro(h, accountId);
+    h.net.stripe.approval.cancel = true;
+    // Stripe has a bad moment when it is asked to end it, whatever the failure is: the account stays
+    h.net.stripe.fail['POST /subscriptions/:id'] = { status: 500, code: 'api_error' };
+    const failed = await b.post('/api/account/delete');
+    assert.equal(failed.status, 409);
+    assert.equal(failed.json.error, 'cancel_first');
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 1);
+    assert.deepEqual(notices(h), []);
+
+    // the second try does not cancel again
+    delete h.net.stripe.fail['POST /subscriptions/:id'];
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1']);
+    assert.equal(h.net.stripe.approvals.length, 1, 'one request for the owner, not one for every try');
+    assert.equal(h.net.stripe.subscriptions.sub_1.cancel_at_period_end, true);
+    assert.deepEqual(notices(h), [NOTICE('sub_1', 'cus_1')]);
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+  }));
+
+test('a cancellation that fails for any other reason than approval is still for the person to try again', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    stripeHas(h, accountId);
+    makePro(h, accountId);
+    // a refused key is not a request for approval, with or without Stripe's wording
+    for (const failure of [{ status: 403, code: 'secret_key_required' }, { status: 500, code: 'api_error' }, { status: 429, code: 'rate_limit' }]) {
+      h.net.stripe.fail['DELETE /subscriptions/:id'] = failure;
+      const res = await b.post('/api/account/delete');
+      assert.equal(res.status, 502, JSON.stringify(failure));
+      assert.equal(res.json.error, 'billing_error');
+    }
+    // nothing was ended, nothing was asked for, and nothing is remembered as waiting: it works when Stripe does
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'DELETE /v1/subscriptions/sub_1', 'DELETE /v1/subscriptions/sub_1']);
+    assert.deepEqual(h.net.stripe.approvals, []);
+    delete h.net.stripe.fail['DELETE /subscriptions/:id'];
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.equal(h.net.stripe.subscriptions.sub_1.status, 'canceled');
+  }));
+
+test('a subscription that stops being set to end while the account is being deleted is looked at again, not taken for ending', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    // an open checkout, so that the deletion has something to wait for at Stripe
+    assert.equal((await b.post('/api/billing/checkout', { interval: 'month' })).status, 200);
+    makePro(h, accountId, { cancelAtPeriodEnd: 1 });
+    h.net.stripe.subscriptions.sub_1 = { id: 'sub_1', status: 'active', cancel_at_period_end: true };
+    // the person takes the subscription up again in the portal at that very moment, and Stripe's webhook says so
+    let resumed = false;
+    h.net.stripe.onExpire = () => {
+      if (resumed) return;
+      resumed = true;
+      h.db.run('UPDATE accounts SET sub_cancel_at_period_end = 0 WHERE id = ?', accountId);
+    };
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.ok(calls(h).includes('DELETE /v1/subscriptions/sub_1'), calls(h).join(', '));
+    assert.equal(h.net.stripe.subscriptions.sub_1.status, 'canceled', 'it would have kept renewing for an account that is gone');
+    assert.equal(h.db.get('SELECT COUNT(*) AS n FROM accounts').n, 0);
+  }));
+
+test('an answer of 403 that says nothing else is taken for a request for approval', () =>
+  withServer(OPTIONS, async (h) => {
+    const { b, accountId } = await member(h);
+    stripeHas(h, accountId);
+    makePro(h, accountId);
+    h.net.stripe.fail['DELETE /subscriptions/:id'] = { status: 403 };
+    assert.equal((await b.post('/api/account/delete')).status, 204);
+    assert.deepEqual(calls(h), ['DELETE /v1/subscriptions/sub_1', 'POST /v1/subscriptions/sub_1']);
+    assert.equal(h.net.stripe.subscriptions.sub_1.cancel_at_period_end, true);
   }));
 
 test('an account with a running subscription cannot be deleted while Stripe is not configured here', () =>

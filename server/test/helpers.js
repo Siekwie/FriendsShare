@@ -110,7 +110,10 @@ function createNet(config) {
     hold: null,
     down: null,
     // customers: id -> the form it was made with; checkoutSessions: id -> { status: open | complete | expired, form }
-    stripe: { subscriptions: {}, customers: {}, checkoutSessions: {}, customerCount: 0, sessions: 0, portals: 0, fail: {} },
+    // approval: what the key may not do without a person's yes, per kind of call (cancel: DELETE of a subscription,
+    //   update: POST to it): true for every subscription, or a Set of subscription ids.
+    // approvals: the requests that were made for the owner, one for each such call.
+    stripe: { subscriptions: {}, customers: {}, checkoutSessions: {}, customerCount: 0, sessions: 0, portals: 0, fail: {}, approval: { cancel: false, update: false }, approvals: [] },
     calling: (predicate) => net.calls.filter(predicate),
   };
 
@@ -208,11 +211,33 @@ function createNet(config) {
         const found = net.stripe.subscriptions[sub[1]];
         return found ? jsonResponse(200, found) : jsonResponse(404, { error: { type: 'invalid_request_error', code: 'resource_missing', message: `No such subscription: '${sub[1]}'` } });
       }
+      // A key with Stripe's approval rules: the call does nothing but make a request for the owner (the
+      // answer is the one Stripe gives).
+      const needsApproval = (kind) => net.stripe.approval[kind] === true || (net.stripe.approval[kind] instanceof Set && net.stripe.approval[kind].has(sub && sub[1]));
+      const askForApproval = (kind) => {
+        net.stripe.approvals.push({ kind, subscription: sub[1] });
+        return jsonResponse(403, {
+          error: {
+            type: 'invalid_request_error',
+            code: 'approval_required',
+            message: 'This action requires human approval before it can be completed. An approval request has been created and is awaiting review. If approved, it will automatically execute.',
+          },
+        });
+      };
       if (sub && method === 'DELETE') {
         if (net.stripe.onDelete) net.stripe.onDelete(sub[1]);
+        if (needsApproval('cancel')) return askForApproval('cancel');
         const found = net.stripe.subscriptions[sub[1]];
         if (!found) return jsonResponse(404, { error: { type: 'invalid_request_error', code: 'resource_missing', message: `No such subscription: '${sub[1]}'` } });
         found.status = 'canceled';
+        return jsonResponse(200, found);
+      }
+      if (sub && method === 'POST') {
+        if (needsApproval('update')) return askForApproval('update');
+        const found = net.stripe.subscriptions[sub[1]];
+        if (!found) return jsonResponse(404, { error: { type: 'invalid_request_error', code: 'resource_missing', message: `No such subscription: '${sub[1]}'` } });
+        if (found.status === 'canceled') return jsonResponse(400, { error: { type: 'invalid_request_error', message: 'A canceled subscription can only update its cancellation_details.' } });
+        if (call.form && call.form.cancel_at_period_end !== undefined) found.cancel_at_period_end = call.form.cancel_at_period_end === 'true';
         return jsonResponse(200, found);
       }
     }

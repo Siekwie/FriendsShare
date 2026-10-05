@@ -10,6 +10,11 @@
 //
 // Money must never end up attached to nothing. An account has at most one open Checkout Session,
 // and a subscription of ours that no account can take is cancelled at once and shouted about.
+//
+// The key may be one that needs a person's approval before anything is cancelled: Stripe then
+// answers 403 "approval_required" and puts a request in the owner's dashboard. That is neither
+// something to retry (every retry would add a request) nor a reason to treat the money as safe, so
+// the places that cancel know about it (see endForDeletion and cancelUnattachable).
 const crypto = require('node:crypto');
 const { fail, readBody, createLimiter } = require('./http');
 const { safeEqual } = require('./util');
@@ -28,6 +33,17 @@ class StripeError extends Error {
 }
 
 const isGone = (err) => err instanceof StripeError && (err.status === 404 || err.code === 'resource_missing');
+
+// What a key that may not do something without a person's yes is answered. The code is what says so;
+// a 403 that does not say anything else is taken for it as well. A 403 with another code (a key that
+// is not allowed to do this at all) is an ordinary failure.
+const isApprovalRequired = (err) => err instanceof StripeError && (err.code === 'approval_required' || (err.status === 403 && !err.code));
+
+// A subscription that is over, whatever its row says it was doing before.
+const ENDED = ['canceled', 'incomplete_expired'];
+
+// Over by itself when the paid period is: nothing renews after that, so there is nothing to cancel.
+const endsByItself = (sub) => sub.cancel_at_period_end === true || (typeof sub.cancel_at === 'number' && sub.cancel_at > 0);
 
 function createBilling({ config, db, fetchFn, now, log, hooks }) {
   const stripeCfg = config.stripe;
@@ -59,7 +75,18 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
     return data;
   }
 
-  const describe = (err) => (err instanceof StripeError ? `status=${err.status} code=${err.code || 'none'}` : 'unexpected error');
+  const describe = (err) =>
+    err instanceof StripeError ? `status=${err.status} code=${err.code || 'none'}${err.cause instanceof StripeError ? ` after ${describe(err.cause)}` : ''}` : 'unexpected error';
+
+  // The subscriptions that Stripe has put up for approval, remembered for as long as the program
+  // runs: asking again would only add another request to the owner's list. "cancel" is the
+  // cancellation itself, "end" is the request to end it with the paid period.
+  const waitingForApproval = { cancel: new Set(), end: new Set() };
+  function remember(set, id) {
+    set.add(id);
+    // a flood of different ids cannot make this grow without end: the oldest are forgotten
+    if (set.size > 1000) set.delete(set.values().next().value);
+  }
 
   // One at a time per key. Two requests about the same account (two checkouts, a checkout and the
   // deletion of the account) must not run through each other.
@@ -159,34 +186,65 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
     return session.url;
   }
 
-  // Ends the subscription at once, for an account that is being deleted. A subscription Stripe
-  // does not know any more is fine; anything else means it may still be billing, so it throws.
-  async function cancelForDeletion(account) {
+  // The person has to end the subscription themselves, in the portal, before the account may go.
+  // The cause (what Stripe said) is kept for the log.
+  const cancelFirst = (cause) => Object.assign(new StripeError('The subscription has to be ended by the person first.', 0, 'cancel_first'), cause ? { cause } : {});
+
+  // What has to be true of the subscription of an account that is being deleted: it is over, or it
+  // will be over by itself with the paid period. Resolves when the account may go, throws when it
+  // may not (anything but "no such subscription" means it may still be billing).
+  async function endForDeletion(account) {
     const id = account.stripe_subscription_id;
-    if (!id || ['canceled', 'incomplete_expired'].includes(account.sub_status)) return;
+    // Nothing is running, or it is set to end and nothing renews: no call to Stripe at all.
+    if (!id || ENDED.includes(account.sub_status) || account.sub_cancel_at_period_end) return;
     if (!STRIPE_ID_RE.test(id)) throw new StripeError('The stored subscription id is not valid.', 0, 'bad_id');
+    const path = `/subscriptions/${encodeURIComponent(id)}`;
+
+    // Cancelled at once, unless Stripe has said already that this one needs approval.
+    if (!waitingForApproval.cancel.has(id)) {
+      try {
+        await stripe('DELETE', path);
+        return;
+      } catch (err) {
+        if (isGone(err)) return;
+        // anything but "needs approval" is for the person to try again, as it always was
+        if (!isApprovalRequired(err)) throw err;
+        // a request waits in the owner's dashboard now; another try would only add one
+        remember(waitingForApproval.cancel, id);
+      }
+    }
+
+    // The cancellation waits for the owner. Ending the subscription with the paid period costs
+    // nobody anything and nothing renews after that, so it will do for the account to go.
+    if (waitingForApproval.end.has(id)) throw cancelFirst();
     try {
-      await stripe('DELETE', `/subscriptions/${encodeURIComponent(id)}`);
+      await stripe('POST', path, { cancel_at_period_end: 'true' });
     } catch (err) {
       if (isGone(err)) return;
-      throw err;
+      if (isApprovalRequired(err)) remember(waitingForApproval.end, id);
+      throw cancelFirst(err);
     }
+    // nothing personal: the ids are Stripe's, and the owner finds the request under Settings > Approvals
+    log(
+      `[billing] NOTICE subscription ${id} of customer ${account.stripe_customer_id || 'unknown'} ends at its period end, ` +
+        'because its immediate cancellation is waiting for approval in Stripe (Settings > Approvals).',
+    );
   }
 
   // Everything with Stripe that has to be over before an account goes: its open checkout expired,
-  // so nothing can be bought for it any more, and its subscription cancelled. finish() then removes
-  // the account in the same turn. If a purchase went through while this was running, the row says
-  // so, and it is looked at again; better to refuse than to leave a subscription behind.
+  // so nothing can be bought for it any more, and its subscription ended or on its way out. finish()
+  // then removes the account in the same turn. If a purchase went through while this was running,
+  // the row says so, and it is looked at again; better to refuse than to leave a subscription behind.
   function settleForDeletion(accountId, finish) {
     return serial(accountId, async () => {
       for (let round = 0; round < 3; round++) {
         const account = db.get('SELECT * FROM accounts WHERE id = ?', accountId);
         if (!account) return;
         if (account.checkout_session_id) await expireSession(account.checkout_session_id);
-        await cancelForDeletion(account);
-        const after = db.get('SELECT stripe_subscription_id AS subscription, sub_status AS status FROM accounts WHERE id = ?', accountId);
+        await endForDeletion(account);
+        const after = db.get('SELECT stripe_subscription_id AS subscription, sub_status AS status, sub_cancel_at_period_end AS ends FROM accounts WHERE id = ?', accountId);
         if (!after) return;
-        if (after.subscription === account.stripe_subscription_id && after.status === account.sub_status) return finish();
+        if (after.subscription === account.stripe_subscription_id && after.status === account.sub_status && after.ends === account.sub_cancel_at_period_end) return finish();
       }
       throw new StripeError('The account kept changing while it was being closed.', 0, 'busy');
     });
@@ -219,19 +277,37 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
   // is gone, or already pays for another subscription. It is cancelled at once, and the operator is
   // told in a line that cannot be missed, because the first payment has to be given back by hand.
   // If Stripe will not cancel it this throws, and the webhook answers with an error so that Stripe
-  // delivers the event again.
-  async function cancelUnattachable(subscriptionId, customerId, reason) {
+  // delivers the event again. Unless Stripe wants a person to approve the cancellation: that is no
+  // failure to try again (every try would add a request for the owner), so the owner is told, once,
+  // and the event is answered as handled. `known` is the subscription as Stripe has it now, for a
+  // caller that has just read it; without it, it is read here.
+  async function cancelUnattachable(subscriptionId, customerId, reason, known) {
     if (!STRIPE_ID_RE.test(subscriptionId)) return;
+    // asked and told already: nothing more to ask, nothing more to say
+    if (waitingForApproval.cancel.has(subscriptionId)) return;
+    // One that is over, or ends with its paid period, is nothing to cancel, and nothing renews. (What
+    // Stripe does not know any more is still reported below: its payment may have been taken.)
+    const sub = known === undefined ? await readSubscription(subscriptionId) : known;
+    if (sub && (ENDED.includes(sub.status) || endsByItself(sub))) {
+      log(`[billing] subscription ${subscriptionId} of ours is not attached to an account, but it is over or ends with its paid period, so it is left alone`);
+      return;
+    }
+    const attached = `[billing] ALERT subscription ${subscriptionId} of customer ${customerId || 'unknown'} could not be attached to an account (${reason})`;
     try {
       await stripe('DELETE', `/subscriptions/${encodeURIComponent(subscriptionId)}`);
     } catch (err) {
+      if (isApprovalRequired(err)) {
+        remember(waitingForApproval.cancel, subscriptionId);
+        log(
+          `${attached} and could not be cancelled yet: its cancellation is waiting for the owner's approval in Stripe (Settings > Approvals > Requests). ` +
+            'Refund in Stripe dashboard: its first payment has to be given back by hand.',
+        );
+        return;
+      }
       // already gone: the payment may still have been taken, so the operator is told all the same
       if (!isGone(err)) throw err;
     }
-    log(
-      `[billing] ALERT subscription ${subscriptionId} of customer ${customerId || 'unknown'} could not be attached to an account (${reason}) ` +
-        'and was cancelled. Refund in Stripe dashboard: its first payment has to be given back by hand.',
-    );
+    log(`${attached} and was cancelled. Refund in Stripe dashboard: its first payment has to be given back by hand.`);
   }
 
   // Writes what Stripe says about a subscription onto its account.
@@ -252,7 +328,7 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
       typeof sub.status === 'string' ? sub.status : 'unknown',
       item.price.id === stripeCfg.priceYearly ? 'year' : 'month',
       seconds === undefined ? now() : seconds * 1000,
-      sub.cancel_at_period_end === true || (typeof sub.cancel_at === 'number' && sub.cancel_at > 0) ? 1 : 0,
+      endsByItself(sub) ? 1 : 0,
       account.id,
     );
     log(`[billing] subscription ${sub.id} is ${sub.status} for account ${account.id}`);
@@ -283,7 +359,7 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
       await refreshSubscription(current, current.stripe_subscription_id, { missingMeansEnded: true });
       current = db.get('SELECT * FROM accounts WHERE id = ?', account.id) || current;
       if (clashes(current, sub)) {
-        await cancelUnattachable(sub.id, idOf(sub.customer), 'the account already has another running subscription');
+        await cancelUnattachable(sub.id, idOf(sub.customer), 'the account already has another running subscription', sub);
         return;
       }
     }
@@ -372,10 +448,13 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
     if (!isOurSubscription(sub) || typeof sub.id !== 'string') return; // the other product's
     const account = accountById(sub.metadata && sub.metadata.fs_account) || accountByCustomer(idOf(sub.customer));
     if (!account) {
-      // What the event says may be old, so Stripe is asked what the subscription is like now.
+      // its cancellation waits for the owner, who has been told: nothing to look at again
+      if (waitingForApproval.cancel.has(sub.id)) return;
+      // What the event says may be old, so Stripe is asked what the subscription is like now. One that
+      // has ended, or ends with its paid period, is nothing to cancel.
       const fresh = await readSubscription(sub.id);
-      if (fresh && isOurSubscription(fresh) && isRunning(fresh.status)) {
-        await cancelUnattachable(sub.id, idOf(fresh.customer) || idOf(sub.customer), 'no account matches');
+      if (fresh && isOurSubscription(fresh) && isRunning(fresh.status) && !endsByItself(fresh)) {
+        await cancelUnattachable(sub.id, idOf(fresh.customer) || idOf(sub.customer), 'no account matches', fresh);
       } else {
         log('[billing] a subscription event of ours could not be matched to an account');
       }
