@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('api', {
   write: call('file:write'),
   finish: call('file:finish'),
   close: call('file:close'),
+  checkUpdate: call('update:check'),
+  installUpdate: call('update:install'),
+  onUpdateProgress: (fn) => ipcRenderer.on('update:progress', (_e, pct) => fn(pct)),
   // the disk path of a file dropped onto the window
   pathOf: (file) => webUtils.getPathForFile(file),
 });

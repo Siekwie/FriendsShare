@@ -1,6 +1,7 @@
 // Main process: the window, the list of shares, and all disk access.
 // The renderer does the networking (WebRTC) and asks for file chunks over IPC.
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net } = require('electron');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -141,6 +142,13 @@ const api = {
     }
     if (typeof info.expiresAt === 'number') share.expiresAt = info.expiresAt;
     if (typeof info.lastSync === 'number') share.lastSync = info.lastSync;
+    // the download choice: last known remote list, paths the friend unchecked, and whether they
+    // have started a download (before that, syncs only fetch the list)
+    if (Array.isArray(info.remote)) {
+      share.remote = info.remote.map((f) => ({ path: String(f.path), size: Number(f.size), mtime: Number(f.mtime) }));
+    }
+    if (Array.isArray(info.excluded)) share.excluded = [...new Set(info.excluded.map(String))];
+    if (typeof info.chosen === 'boolean') share.chosen = info.chosen;
     saveConfig();
     return share;
   },
@@ -234,6 +242,106 @@ const api = {
   },
 };
 
+// Self-update from the latest GitHub release. The portable build runs from a temp dir; the real
+// exe is PORTABLE_EXECUTABLE_FILE, and Windows lets us rename it while it runs.
+const RELEASE_API = 'https://api.github.com/repos/Siekwie/FriendsShare/releases/latest';
+const RELEASE_URL_PREFIX = 'https://github.com/Siekwie/FriendsShare/';
+const ASSET_NAME = 'FriendsShare.exe';
+const portableExe = process.env.PORTABLE_EXECUTABLE_FILE || null;
+let latest = null; // { version, url, size, page } of the newest release, once a check found one
+let installing = false;
+
+const parseVersion = (v) => String(v).replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+function isNewer(a, b) {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  for (let i = 0; i < Math.max(x.length, y.length, 3); i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  }
+  return false;
+}
+
+// -> { status: 'current' | 'available' | 'error', current, latest?, error? }
+api['update:check'] = async () => {
+  const current = app.getVersion();
+  try {
+    const res = await net.fetch(RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    const rel = await res.json();
+    const asset = (rel.assets || []).find((a) => a.name === ASSET_NAME);
+    if (!rel.tag_name || !asset || !String(asset.browser_download_url).startsWith(RELEASE_URL_PREFIX)) throw new Error('No download in the latest release');
+    const version = parseVersion(rel.tag_name).join('.');
+    if (!isNewer(version, current)) {
+      latest = null;
+      return { status: 'current', current };
+    }
+    latest = { version, url: asset.browser_download_url, size: asset.size, page: `${RELEASE_URL_PREFIX}releases/tag/${rel.tag_name}` };
+    return { status: 'available', current, latest: version };
+  } catch (err) {
+    return { status: 'error', current, error: err.message };
+  }
+};
+
+// Portable exe: download, swap, restart. Otherwise (dev) just open the release page.
+api['update:install'] = async () => {
+  if (!latest) throw new Error('No update available');
+  if (!portableExe) {
+    shell.openExternal(latest.page);
+    return { opened: true };
+  }
+  if (installing) throw new Error('Already updating');
+  installing = true;
+  const next = portableExe + '.new';
+  const old = portableExe + '.old';
+  try {
+    await downloadTo(next, latest.url, latest.size);
+    await fsp.rm(old, { force: true });
+    await fsp.rename(portableExe, old);
+    try {
+      await fsp.rename(next, portableExe);
+    } catch (err) {
+      await fsp.rename(old, portableExe).catch(() => {});
+      throw err;
+    }
+  } catch (err) {
+    await fsp.rm(next, { force: true }).catch(() => {});
+    installing = false;
+    throw new Error(`Update failed: ${err.message}`);
+  }
+  // the new instance must be able to take the single-instance lock
+  app.releaseSingleInstanceLock();
+  spawn(portableExe, [], { detached: true, stdio: 'ignore' }).unref();
+  app.quit();
+  return { restarting: true };
+};
+
+async function downloadTo(file, url, size) {
+  if (!url.startsWith(RELEASE_URL_PREFIX)) throw new Error('Unexpected download address');
+  const res = await net.fetch(url);
+  if (!res.ok || !res.body) throw new Error(`Download answered ${res.status}`);
+  const fh = await fsp.open(file, 'w');
+  let done = 0;
+  let lastPct = -1;
+  try {
+    for await (const chunk of res.body) {
+      await fh.write(chunk);
+      done += chunk.length;
+      const pct = size ? Math.min(100, Math.floor((done / size) * 100)) : 0;
+      if (pct !== lastPct && win && !win.isDestroyed()) win.webContents.send('update:progress', pct);
+      lastPct = pct;
+    }
+  } finally {
+    await fh.close();
+  }
+  if (done !== size) throw new Error('Downloaded file has the wrong size');
+}
+
+// Clears what an earlier update left behind (the old exe may still be closing; retry next start).
+function cleanupUpdate() {
+  if (!portableExe) return;
+  for (const f of [portableExe + '.old', portableExe + '.new']) fsp.rm(f, { force: true }).catch(() => {});
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 980,
@@ -267,6 +375,7 @@ if (!app.requestSingleInstanceLock() && !home) {
   });
   app.whenReady().then(() => {
     loadConfig();
+    cleanupUpdate();
     for (const [channel, fn] of Object.entries(api)) ipcMain.handle(channel, (_e, ...args) => fn(...args));
     createWindow();
   });

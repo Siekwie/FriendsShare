@@ -282,8 +282,10 @@ const p2p = (() => {
   }
 
   // Downloads everything that is missing or different from a friend's folder. Nothing is ever
-  // deleted locally. onProgress gets { file, done, total } in bytes.
-  async function sync(share, onProgress) {
+  // deleted locally. Files in share.excluded are skipped. onProgress gets { file, done, total } in
+  // bytes, counting only the files that will be downloaded. With options.listOnly nothing is
+  // downloaded; the fresh remote list is stored either way so the UI can show it.
+  async function sync(share, onProgress, options = {}) {
     const room = await sha256(share.code);
     const hostId = await join(room);
     const peer = createPeer(room, hostId, share.code, true);
@@ -297,9 +299,12 @@ const p2p = (() => {
       clearTimeout(timer);
 
       const manifest = await request(peer, { t: 'list' });
-      await api.updateShare(share.id, { name: manifest.name, expiresAt: manifest.expiresAt });
+      await api.updateShare(share.id, { name: manifest.name, expiresAt: manifest.expiresAt, remote: peer.files });
+      if (options.listOnly) return { downloaded: 0, files: peer.files.length, listOnly: true };
       const local = new Map((await api.listFiles(share.id)).map((f) => [f.path, f]));
+      const excluded = new Set(share.excluded);
       const wanted = peer.files.filter((f) => {
+        if (excluded.has(f.path)) return false;
         const mine = local.get(f.path);
         // a finished download carries the original's modified time (to the precision of the disk)
         return !mine || mine.size !== f.size || Math.abs(mine.mtime - f.mtime) > 2000;

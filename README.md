@@ -17,9 +17,14 @@ Files go directly from one PC to the other. They are never uploaded to a server.
   never the code, file names or file data.
 - **Direct connection**: encrypted by WebRTC. Both apps additionally prove to each other that they
   know the code, bound to the keys of that connection, so the server cannot sit in the middle.
-- **Sync**: the friend's app downloads files that are missing or changed, on start, every 10
-  minutes and on **Sync now**. Interrupted downloads continue where they stopped. Files deleted by
-  the owner are not deleted on the friend's side.
+- **Sync**: after adding a code the friend's app only fetches the file list; the friend ticks the
+  files they want (all are ticked by default) and clicks **Download selected**. From then on it
+  downloads the ticked files that are missing or changed, on start, every 10 minutes and on
+  **Sync now**. Files that newly appear on the owner's side are ticked by default; unticking a file
+  that is already downloaded does not delete it. Interrupted downloads continue where they stopped.
+  Files deleted by the owner are not deleted on the friend's side.
+- **Updates**: the circle at the bottom left turns green when a newer release exists. Click it and
+  the app downloads the new version and restarts.
 
 Limits worth knowing:
 
@@ -43,5 +48,17 @@ keeps all of an instance's settings and folders in one directory, so several can
 
 ## Server
 
-The matchmaking server runs at `wss://friendsshare.wiest-lab.eu` as a Docker container behind Caddy.
-`deploy/deploy.sh` (from Git Bash) deploys the committed `HEAD`.
+The app uses the matchmaking server at `wss://friendsshare.wiest-lab.eu`. It is a small Docker
+container behind a Caddy reverse proxy; `deploy/deploy.sh <ssh-host>` (from Git Bash) deploys the
+committed `HEAD`.
+
+## License
+
+The source is public, but this is not free software for businesses.
+
+FriendsShare is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). In short: as
+a private person you may use, modify and share it for any noncommercial purpose. Commercial use,
+including selling it or offering it (or a modified version) as a paid or hosted service, is reserved
+to the author. Ask if you want a commercial license.
+
+Required Notice: Copyright (c) 2026 Siekwie (https://github.com/Siekwie/FriendsShare)

@@ -1,5 +1,6 @@
 // End-to-end test: a local matchmaking server and two app instances, one sharing a folder and one
-// downloading it with the code. Passes when the friend's copy is byte-identical.
+// downloading it with the code. Passes when the friend's copy is byte-identical, except for the
+// file the friend unchecked, which must not arrive.
 //   npm test
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -19,6 +20,7 @@ const files = {
   'empty.txt': Buffer.alloc(0),
   'sub/deeper/big.bin': crypto.randomBytes(40 * 1024 * 1024),
 };
+const excluded = { 'skip/me.bin': crypto.randomBytes(1024 * 1024) };
 
 function writeConfig(who, share) {
   const dir = path.join(tmp, who, 'userdata');
@@ -27,12 +29,12 @@ function writeConfig(who, share) {
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-for (const [rel, data] of Object.entries(files)) {
+for (const [rel, data] of Object.entries({ ...files, ...excluded })) {
   fs.mkdirSync(path.dirname(path.join(hostDir, rel)), { recursive: true });
   fs.writeFileSync(path.join(hostDir, rel), data);
 }
 writeConfig('host', { id: 'h1', role: 'host', name: 'Test folder', dir: hostDir, code, hostKey: crypto.randomUUID(), expiresAt: Date.now() + 86400000 });
-writeConfig('guest', { id: 'g1', role: 'guest', name: 'Share', dir: null, code });
+writeConfig('guest', { id: 'g1', role: 'guest', name: 'Share', dir: null, code, chosen: true, excluded: Object.keys(excluded) });
 
 const children = [];
 function run(cmd, args, env) {
@@ -73,7 +75,15 @@ const started = Date.now();
 const poll = setInterval(() => {
   if (synced()) {
     clearInterval(poll);
-    finish(true, `folder synced in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    // the sync is over once everything wanted is here; give a wrongly downloaded file time to show up
+    setTimeout(() => {
+      const leaked = Object.keys(excluded).filter((rel) => fs.existsSync(path.join(guestDir, rel)) || fs.existsSync(path.join(guestDir, path.dirname(rel))) && fs.readdirSync(path.join(guestDir, path.dirname(rel))).length);
+      const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'guest', 'userdata', 'config.json'), 'utf8')).shares[0];
+      if (leaked.length) finish(false, `excluded file was downloaded: ${leaked}`);
+      else if ((saved.remote || []).length !== Object.keys(files).length + Object.keys(excluded).length) finish(false, 'the remote file list was not stored');
+      else finish(true, `folder synced in ${seconds} s, excluded file skipped`);
+    }, 2500);
   } else if (Date.now() - started > TIMEOUT) {
     clearInterval(poll);
     finish(false, 'the folder did not arrive in time');

@@ -2,12 +2,12 @@
 # Deploys the matchmaking server from the committed HEAD: uploads the source, rebuilds the image,
 # restarts the container and waits until it reports healthy. Uncommitted changes are not deployed.
 #
-#   deploy/deploy.sh [ssh-host]      (default: wiestlab; run from Git Bash on Windows)
+#   deploy/deploy.sh <ssh-host>      (or set DEPLOY_HOST; run from Git Bash on Windows)
 #
 # The server keeps /srv/friendsshare/data (the list of registered share rooms, no files).
 set -euo pipefail
 
-HOST="${1:-wiestlab}"
+HOST="${1:-${DEPLOY_HOST:?usage: deploy/deploy.sh <ssh-host>}}"
 DIR=/srv/friendsshare
 SITES=/srv/proxy/caddy/sites
 

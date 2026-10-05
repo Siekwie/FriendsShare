@@ -123,7 +123,7 @@ function guestCard(share) {
   return el('div', { class: 'card' },
     el('div', { class: 'row' },
       el('h2', { class: 'grow' }, 'Sync'),
-      el('button', { class: 'primary', id: 'btn-sync', onclick: () => syncShare(share.id) }, 'Sync now')),
+      el('button', { class: 'primary', id: 'btn-sync', onclick: () => syncShare(share.id, { download: true }) }, share.chosen ? 'Sync now' : 'Download selected')),
     el('div', { class: 'status', id: 'status' }),
     el('progress', { id: 'progress', max: 1, value: 0, hidden: true }),
     el('div', { class: 'hint' },
@@ -155,12 +155,52 @@ async function refreshFiles() {
   if (!share) return;
   const files = share.dir ? await api.listFiles(share.id) : [];
   if (selectedId !== share.id || !$('#files')) return;
+  if (share.role === 'guest' && share.remote?.length) return renderChoice(share, files);
   const total = files.reduce((sum, f) => sum + f.size, 0);
   $('#files-title').textContent = files.length ? `Files (${files.length}, ${formatBytes(total)})` : 'Files';
   $('#files').replaceChildren(
     ...(files.length
       ? files.map((f) => el('div', { class: 'file' }, el('span', { title: f.path }, f.path), el('span', {}, formatBytes(f.size))))
       : [el('div', { class: 'file muted' }, share.role === 'host' ? 'This folder is empty.' : 'Nothing here yet.')]));
+}
+
+// A finished download carries the original's modified time (see p2p.sync).
+const isDownloaded = (remote, mine) => mine && mine.size === remote.size && Math.abs(mine.mtime - remote.mtime) <= 2000;
+
+// Friend's folder: the remote files with a checkbox each, then local files the owner no longer has.
+function renderChoice(share, localFiles) {
+  const local = new Map(localFiles.map((f) => [f.path, f]));
+  const excluded = new Set(share.excluded);
+  const remotePaths = new Set(share.remote.map((f) => f.path));
+  const picked = share.remote.filter((f) => !excluded.has(f.path));
+  const pickedSize = picked.reduce((sum, f) => sum + f.size, 0);
+
+  const save = async (paths) => {
+    share.excluded = [...paths];
+    await api.updateShare(share.id, { excluded: share.excluded });
+    refreshFiles();
+  };
+  const toggle = (path, on) => save(on ? [...excluded].filter((p) => p !== path) : [...excluded, path]);
+  // all checked -> uncheck all, otherwise check all; excluded paths that left the list are kept
+  const toggleAll = () => save(picked.length === share.remote.length ? [...excluded, ...remotePaths] : [...excluded].filter((p) => !remotePaths.has(p)));
+
+  const rows = share.remote.map((f) =>
+    el('label', { class: 'file' },
+      el('input', { type: 'checkbox', checked: !excluded.has(f.path), onchange: (e) => toggle(f.path, e.target.checked) }),
+      el('span', { title: f.path }, f.path),
+      el('span', { class: 'done' }, isDownloaded(f, local.get(f.path)) ? 'downloaded' : ''),
+      el('span', {}, formatBytes(f.size))));
+  const extra = localFiles
+    .filter((f) => !remotePaths.has(f.path))
+    .map((f) => el('div', { class: 'file plain' }, el('span', { title: f.path }, f.path), el('span', { class: 'done' }, 'downloaded'), el('span', {}, formatBytes(f.size))));
+
+  $('#files-title').textContent = `Files (${picked.length} of ${share.remote.length} selected, ${formatBytes(pickedSize)})`;
+  const scroll = $('#files').scrollTop;
+  $('#files').replaceChildren(
+    el('div', { class: 'file selectall' }, el('button', { class: 'small', onclick: toggleAll }, 'Select all / none')),
+    ...rows,
+    ...extra);
+  $('#files').scrollTop = scroll;
 }
 
 async function importInto(share, run) {
@@ -186,10 +226,16 @@ async function removeShare(share) {
   await reload();
 }
 
-async function syncShare(id) {
+// Until the friend clicked the download button once, a sync only fetches the file list.
+// options.download is that click: it makes the choice final and from then on syncs download.
+async function syncShare(id, options = {}) {
   const share = state.shares.find((s) => s.id === id);
   if (!share || share.role !== 'guest' || syncing.has(id)) return;
   syncing.add(id);
+  if (options.download && !share.chosen) {
+    share.chosen = true;
+    await api.updateShare(id, { chosen: true });
+  }
   const show = (st) => {
     status.set(id, st);
     if (selectedId === id) renderStatus();
@@ -203,9 +249,9 @@ async function syncShare(id) {
       if (now - last.t >= 1000) last = { ...last, speed: ((done - last.done) / (now - last.t)) * 1000, t: now, done };
       last.shown = now;
       show({ kind: 'syncing', done, total, text: `${file} · ${formatBytes(done)} of ${formatBytes(total)}${last.speed ? ` · ${formatBytes(last.speed)}/s` : ''}` });
-    });
+    }, { listOnly: !share.chosen });
     syncing.delete(id);
-    status.set(id, { kind: 'ok', text: result.downloaded ? `Synced. ${result.downloaded} file${result.downloaded === 1 ? '' : 's'} downloaded.` : 'Up to date.' });
+    status.set(id, { kind: 'ok', text: result.listOnly ? 'Choose what to download, then click Download.' : result.downloaded ? `Synced. ${result.downloaded} file${result.downloaded === 1 ? '' : 's'} downloaded.` : 'Up to date.' });
   } catch (err) {
     syncing.delete(id);
     status.set(id, { kind: 'error', text: err.message });
@@ -274,8 +320,50 @@ p2p.on('host', ({ shareId, friends, sent }) => {
   if (selectedId === shareId) renderStatus();
 });
 
+// Self-update: the main process talks to GitHub; this is just the circle next to the connection state.
+const UPDATE_CHECK_EVERY = 4 * 3600 * 1000;
+let update = { status: 'current' };
+let updating = false;
+
+function renderUpdate(pct) {
+  const btn = $('#btn-update');
+  btn.className = `upd${updating ? ' busy' : update.status === 'available' ? ' available' : ''}`;
+  btn.textContent = updating ? (pct != null ? `${pct}%` : '…') : update.status === 'available' ? '↓' : '';
+  btn.disabled = updating;
+  btn.title = updating
+    ? 'Downloading update…'
+    : update.status === 'available'
+      ? `Update to v${update.latest}`
+      : update.status === 'error'
+        ? `Could not check for updates (v${update.current})`
+        : `Up to date (v${update.current})`;
+}
+
+async function checkUpdate() {
+  if (updating) return;
+  update = await api.checkUpdate();
+  renderUpdate();
+}
+
+$('#btn-update').addEventListener('click', async () => {
+  if (update.status !== 'available') return checkUpdate();
+  if (syncing.size && !confirm('Files are still transferring. Update and restart anyway?')) return;
+  updating = true;
+  renderUpdate();
+  try {
+    await api.installUpdate();
+  } catch (err) {
+    alert(err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, ''));
+  }
+  updating = false;
+  renderUpdate();
+});
+api.onUpdateProgress((pct) => renderUpdate(pct));
+
 (async () => {
   await reload();
+  checkUpdate();
+  setInterval(checkUpdate, UPDATE_CHECK_EVERY);
   p2p.connect(state.signalUrl);
   setInterval(syncAll, RESYNC_EVERY);
   // a code that runs out while the app is open stops being served

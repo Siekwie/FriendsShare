@@ -128,8 +128,31 @@ aside li.empty {
   font-size: 13px;
   white-space: normal;
 }
-.conn {
+.footer {
   margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 14px;
+}
+.upd {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+}
+.upd.available,
+.upd.busy {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.conn {
   padding: 12px 16px;
   color: var(--muted);
   font-size: 12px;
@@ -269,6 +292,36 @@ progress::-webkit-progress-value {
 .file span:last-child {
   color: var(--muted);
   flex: none;
+}
+/* friend's file list: checkbox, name, "downloaded" mark, size */
+.file input + span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file input {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  align-self: center;
+}
+.file .done {
+  flex: none;
+  min-width: 80px;
+  color: var(--ok);
+  font-size: 12px;
+  text-align: right;
+}
+.file.selectall {
+  border-top: 0;
+  padding-bottom: 8px;
+}
+.file.plain {
+  padding-left: 22px;
+}
+label.file {
+  cursor: pointer;
 }
 
 /* dialogs */
