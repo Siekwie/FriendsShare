@@ -8,6 +8,8 @@
   --accent: #5b8cff;
   --ok: #4cc38a;
   --bad: #ff6b6b;
+  /* dark scrollbars and checkboxes instead of the light ones */
+  color-scheme: dark;
 }
 
 * {
@@ -70,9 +72,18 @@ select {
 }
 input:focus,
 select:focus,
-button:focus-visible {
+button:focus-visible,
+a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+a:hover {
+  text-decoration: underline;
 }
 
 /* sidebar */
@@ -107,12 +118,7 @@ aside ul {
   padding: 0 8px;
 }
 aside li {
-  padding: 7px 10px;
   border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 aside li:hover {
   background: var(--card);
@@ -121,19 +127,149 @@ aside li.selected {
   background: var(--accent);
   color: #fff;
 }
-aside li.empty {
+/* the whole entry is one button, so Tab reaches it and Enter or Space open it */
+aside li button.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+aside li button.item:focus-visible {
+  outline-offset: -2px;
+}
+aside li.selected button.item:focus-visible {
+  outline-color: #fff;
+}
+aside li .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* over the limit of the plan: not shared or synced until a slot is free */
+aside li.paused .name {
+  opacity: 0.5;
+}
+aside li .tag {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--muted);
-  cursor: default;
+  font-size: 11px;
+}
+aside li.selected .tag {
+  border-color: rgba(255, 255, 255, 0.5);
+  color: #fff;
+}
+aside li.empty {
+  padding: 7px 10px;
+  color: var(--muted);
   background: none;
   font-size: 13px;
-  white-space: normal;
+}
+/* account row and footer stay at the bottom of the window, whatever the length of the list */
+.dock {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 16px);
+  margin: 6px 8px 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+}
+.account:hover {
+  background: var(--card);
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.who .name,
+.who .plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.who .name {
+  font-weight: 600;
+}
+.who .plan {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* a round picture, or a neutral person when there is none (or it cannot be loaded) */
+.avatar {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--muted);
+}
+.avatar.big {
+  width: 56px;
+  height: 56px;
+}
+.avatar svg {
+  width: 62%;
+  height: 62%;
+}
+.avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .footer {
-  margin-top: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding-right: 14px;
+}
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gear {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+}
+.gear:hover {
+  color: var(--text);
 }
 .upd {
   flex: none;
@@ -220,6 +356,19 @@ h2 {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 10px;
+}
+/* why the app cannot connect, above everything else; and why a folder is paused */
+.card.notice {
+  margin: 0 0 6px;
+  border-left: 3px solid var(--bad);
+}
+.card.paused-card {
+  border-left: 3px solid var(--muted);
+}
+.card.notice p,
+.card.paused-card p {
+  margin: 6px 0 12px;
+  color: var(--muted);
 }
 .row {
   display: flex;
@@ -344,10 +493,142 @@ dialog p {
 dialog input {
   width: 100%;
 }
+dialog .row {
+  flex-wrap: nowrap;
+}
 dialog .error {
   min-height: 20px;
   margin-top: 6px;
   font-size: 13px;
+}
+.where {
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+/* "or" between the two ways to add a folder */
+.or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.or::before,
+.or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+/* account */
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.profile .name {
+  font-size: 16px;
+  font-weight: 600;
+}
+.profile .email {
+  color: var(--muted);
+  user-select: text;
+}
+.profile div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#dlg-account .plan-line {
+  margin: 0 0 14px;
+  color: var(--text);
+}
+#dlg-account .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+#dlg-account .error,
+#dlg-limit .error {
+  min-height: 0;
+}
+#dlg-account .error:not(:empty),
+#dlg-limit .error:not(:empty) {
+  margin-top: 10px;
+}
+
+/* settings */
+#dlg-settings {
+  width: 480px;
+}
+#dlg-settings h2 {
+  margin-bottom: 14px;
+}
+/* no reserved space for the error line: the dialog is tall already */
+#dlg-settings .error {
+  min-height: 0;
+  margin-top: 0;
+}
+#dlg-settings .error:not(:empty) {
+  margin-top: 6px;
+}
+.setting {
+  margin-bottom: 14px;
+}
+.setting .hint {
+  margin-top: 6px;
+}
+.label {
+  margin-bottom: 6px;
+}
+.box {
+  min-width: 0;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.check input {
+  flex: none;
+  width: auto;
+  margin: 0;
+}
+.check input:disabled,
+.check input:disabled + span {
+  opacity: 0.5;
+  cursor: default;
+}
+.about {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.about h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.links {
+  display: flex;
+  gap: 16px;
+  margin-top: 4px;
 }
 .actions {
   display: flex;

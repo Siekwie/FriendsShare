@@ -1,0 +1,8 @@
+{
+  "name": "friendsshare-official-test",
+  "productName": "FriendsShareOfficialTest",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test only: runs app/main.js under another name (see test/official.js)",
+  "main": "main.js"
+}

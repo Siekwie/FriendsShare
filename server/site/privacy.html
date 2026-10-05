@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Privacy – FriendsShare</title>
+<meta name="description" content="What FriendsShare stores about you, why, and for how long.">
+<!--include head-->
+</head>
+<body>
+<!--include header-plain-->
+
+<main id="main" class="legal" tabindex="-1">
+  <h1>Privacy</h1>
+  <p class="muted">Last updated: 5 October 2026</p>
+
+  <p>This page says what FriendsShare at {{site_url}} and the FriendsShare app store about you, why, and for how long. The short version: no advertising, no tracking, no cookies just for visiting, and your files never reach our server. What the server does keep is small, and it is deleted when it is no longer needed.</p>
+
+  <h2>Who is responsible</h2>
+  <address>{{operator_name}}<br>{{{operator_address}}}</address>
+  <p>Contact: <!--if operator_email--><a href="mailto:{{operator_email}}">{{operator_email}}</a><!--endif--><!--if !operator_email-->the postal address above<!--endif--></p>
+
+  <h2>When you only visit this website</h2>
+  <ul>
+    <li>Your browser sends its IP address with every request. The FriendsShare server uses it to answer the request and keeps no access log.</li>
+    <li>No cookie is set. If you switch between the light and dark theme, your browser remembers that choice in its local storage. It is never sent anywhere.</li>
+    <li>There is no tracking and no analytics, and the pages load no fonts, scripts or images from other companies.</li>
+  </ul>
+  <p>Legal basis: Art. 6 (1) (f) GDPR, our interest in running the site securely.</p>
+
+  <h2>Downloading and updating the app</h2>
+  <p>The app file comes from GitHub (github.com, GitHub Inc.). The download button on this site is a link to GitHub, so GitHub receives your IP address and the usual request data when you download the app. The app also asks GitHub's API for the newest version and downloads its updates from there, and GitHub sees your IP address then as well. GitHub's own privacy statement applies to this.</p>
+
+  <h2>Using the app without an account</h2>
+  <p>The free plan needs no account. The app connects to the FriendsShare matchmaking server so that two apps can find each other. While it is connected, the server processes, in passing:</p>
+  <ul>
+    <li>your IP address;</li>
+    <li>the app version and a build fingerprint, which is used to admit only official builds of the app;</li>
+    <li>the connection handshake that is passed between your app and your friend's app. It contains IP addresses and ports. It is forwarded and not stored.</li>
+  </ul>
+  <p>For every folder you share, the server stores:</p>
+  <ul>
+    <li>a SHA-256 fingerprint of the share code. It is a one-way hash, so the server does not know the code itself;</li>
+    <li>a hash of a secret key that your app creates for that folder, so that nobody else can register the same code;</li>
+    <li>the date the code expires.</li>
+  </ul>
+  <p>This is deleted when the code expires or is replaced, or when you stop sharing the folder. The server never receives share codes, file names or files. One exception to the deletion: if a share code is blocked after a report of abuse, its fingerprint stays on a block list so that the code cannot be used again.</p>
+
+  <h2>Direct connections between the two PCs</h2>
+  <p>Files travel directly from one PC to the other, over an encrypted connection. The two PCs therefore see each other's IP address, as in any direct connection. To find out its own public address, the app asks public STUN servers run by Google (stun.l.google.com) and Cloudflare (stun.cloudflare.com). They see your IP address. No file data goes there.</p>
+  <p>Legal basis for this section and the two before it: Art. 6 (1) (b) GDPR, providing the app you use, and Art. 6 (1) (f) GDPR, our interest in keeping the service secure and in admitting only official builds.</p>
+
+  <h2>When you sign in</h2>
+  <p>You need an account only for Pro. Signing in runs through GitHub or Google. From then on the server stores:</p>
+  <ul>
+    <li>the provider's user id, your name, your email address and the address of your picture, as the provider gives them to us. Only verified email addresses are used;</li>
+    <li>when the account was created;</li>
+    <li>your sign-in sessions, only as hashes of their tokens.</li>
+  </ul>
+  <p>Two cookies are needed for this: <code>__Host-fs_oauth_state</code>, which lives for ten minutes while you sign in, and <code>__Host-fs_session</code>, which keeps you signed in for up to 60 days and is removed when you sign out. The prefix <code>__Host-</code> makes your browser tie them to this exact website and to a secure connection. Neither cookie is used for anything else, which is why there is no cookie banner. Once you are signed in, your picture is loaded from GitHub's or Google's servers.</p>
+  <p>If you sign in from the desktop app, the app keeps a sign-in token on your PC, encrypted with the operating system's own protection for secrets. The token stops working when you sign out.</p>
+  <p>Legal basis: Art. 6 (1) (b) GDPR, providing the service you signed up for.</p>
+
+  <!--if billing-->
+  <h2>Payment</h2>
+  <p>The Pro plan is paid through Stripe. Card and billing details are entered on Stripe's pages and never reach this server. The server stores your Stripe customer and subscription id, the status of the subscription and the date it is paid until. Stripe's own privacy policy applies to the checkout.</p>
+  <!--endif-->
+
+  <h2>Who receives data</h2>
+  <ul>
+    <!--if operator_hosting-->
+    <li>{{operator_hosting}}, which runs the server on our behalf.</li>
+    <!--endif-->
+    <li>GitHub, when you download or update the app, and when you sign in with GitHub.</li>
+    <li>Google, when you sign in with Google, and because its STUN server helps your app find its public address.</li>
+    <li>Cloudflare, because its STUN server helps your app find its public address.</li>
+    <!--if billing-->
+    <li>Stripe, for payments. Stripe may process data in the United States under the EU-U.S. Data Privacy Framework and standard contractual clauses.</li>
+    <!--endif-->
+    <li>The friend you share a folder with. Their app sees your IP address when the two PCs connect.</li>
+  </ul>
+  <p>Nobody else. Data is not sold and not used for advertising.</p>
+
+  <h2>How long it is kept</h2>
+  <p>The records of a shared folder are kept until its code expires or is replaced, or until you stop sharing the folder. Nothing is stored about the connection handshake. Account data is kept until you delete your account, which you can do at any time on the <a href="/account">account page</a>. That cancels a running subscription at once and removes the account with its sign-in methods and sessions.<!--if backup_days--> Database backups are overwritten in rotation, so deleted data is gone from them after at most {{backup_days}} days.<!--endif--></p>
+
+  <h2>Your rights</h2>
+  <p>You can ask what is stored about you, have it corrected or deleted, have its processing restricted, receive it in a machine-readable form, and object to processing that rests on our legitimate interests. Deleting your account works without asking: use the <a href="/account">account page</a>. For anything else write to <!--if operator_email--><a href="mailto:{{operator_email}}">{{operator_email}}</a><!--endif--><!--if !operator_email-->the postal address above<!--endif-->. You also have the right to complain to a data protection supervisory authority, for example the one where you live.</p>
+</main>
+
+<!--include footer-->
+</body>
+</html>

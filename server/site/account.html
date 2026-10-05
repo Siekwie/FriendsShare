@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Account – FriendsShare</title>
+<meta name="description" content="Manage your FriendsShare plan and account.">
+<meta name="robots" content="noindex">
+<!--include head-->
+<script src="/js/account.js" defer></script>
+</head>
+<body>
+<!--include header-plain-->
+
+<main id="main" class="page" tabindex="-1">
+  <h1>Your account</h1>
+
+  <noscript><p class="notice">This page needs JavaScript to load your account.</p></noscript>
+  <p class="muted" id="acct-loading" role="status">Loading your account…</p>
+  <div class="notice notice-error" id="acct-fail" hidden>
+    <p role="alert" id="acct-fail-msg"></p>
+    <button type="button" class="btn btn-sm" id="acct-retry">Try again</button>
+  </div>
+  <p class="notice notice-ok" id="billing-note" role="status" hidden>
+    <span id="billing-text"></span>
+    <button type="button" class="btn btn-sm" id="btn-recheck" hidden>Check again</button>
+  </p>
+
+  <div class="stack" id="acct" hidden>
+
+    <section class="card" aria-labelledby="who-h">
+      <h2 class="sr-only" id="who-h">Profile</h2>
+      <div class="profile-row">
+        <img class="avatar" id="acct-avatar" width="56" height="56" alt="" hidden>
+        <span class="avatar avatar-fallback" id="acct-initial" aria-hidden="true"></span>
+        <div class="profile-id">
+          <p class="profile-name" id="acct-name"></p>
+          <p class="muted" id="acct-email"></p>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-signout">Sign out</button>
+          <button type="button" class="btn" id="btn-signout-all" aria-describedby="signout-note">Sign out everywhere</button>
+        </div>
+      </div>
+      <p class="muted small" id="signout-note">Sign out everywhere ends every session of this account, in all browsers and in the FriendsShare apps on your PCs.</p>
+      <p class="form-error" id="signout-error" role="alert" hidden></p>
+    </section>
+
+    <section class="card" aria-labelledby="plan-h">
+      <div class="card-head">
+        <h2 id="plan-h">Your plan</h2>
+        <span class="plan-badge" id="plan-badge">Free</span>
+      </div>
+
+      <div class="flow" id="plan-free" hidden>
+        <p id="free-text">You are on the Free plan.</p>
+        <div class="flow" id="upgrade" hidden>
+          <p>Pro removes the folder limit: unlimited folders instead of <span id="free-limit">5</span>. File size is never limited, on any plan.</p>
+          <fieldset class="choices">
+            <legend>Choose how you want to pay</legend>
+            <label class="choice">
+              <input type="radio" name="interval" value="year" checked>
+              <span class="choice-name">Yearly</span>
+              <span class="choice-price"><span id="price-yearly-pm"></span> per month</span>
+              <span class="choice-sub">billed yearly as <span id="price-yearly"></span></span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="interval" value="month">
+              <span class="choice-name">Monthly</span>
+              <span class="choice-price"><span id="price-monthly"></span> per month</span>
+              <span class="choice-sub">billed month to month</span>
+            </label>
+          </fieldset>
+          <button type="button" class="btn btn-primary btn-lg" id="btn-checkout">Upgrade to Pro</button>
+          <p class="muted small">You pay on Stripe's page. Cancel any time; Pro then runs to the end of the period you paid for.</p>
+        </div>
+        <p id="free-nobilling" hidden>Everything is free for now, so there is nothing to buy.</p>
+      </div>
+
+      <div class="flow" id="plan-pro" hidden>
+        <p>You are on Pro: there is no limit on the number of folders.</p>
+        <p id="pro-status"></p>
+        <button type="button" class="btn" id="btn-portal">Manage subscription</button>
+        <p class="muted small">Opens a page on Stripe where you manage or cancel your subscription.</p>
+      </div>
+
+      <p class="form-error" id="plan-error" role="alert" hidden></p>
+      <p class="muted small">The FriendsShare app on your PC picks up your plan by itself once you are signed in there. In the app, click the account button at the bottom left.</p>
+    </section>
+
+    <section class="card" aria-labelledby="methods-h">
+      <h2 id="methods-h">Sign-in methods</h2>
+      <ul class="rows" id="methods"></ul>
+      <p class="muted small">Any connected method signs you in to this same account.</p>
+    </section>
+
+    <section class="card card-danger" aria-labelledby="del-h">
+      <h2 id="del-h">Delete account</h2>
+      <p>Deleting your account removes it together with its sign-in methods and cancels a running Pro subscription at once. Folders and files on your PC are not touched. This cannot be undone.</p>
+      <button type="button" class="btn btn-danger-outline" id="btn-delete">Delete account…</button>
+    </section>
+  </div>
+
+  <dialog class="dialog" id="dlg-delete" aria-labelledby="dlg-delete-h">
+    <h2 id="dlg-delete-h">Delete your account?</h2>
+    <p>This cannot be undone. It will:</p>
+    <ul>
+      <li id="dlg-pro-line" hidden>cancel your Pro subscription at once,</li>
+      <li>remove your account and its sign-in methods.</li>
+    </ul>
+    <p>Folders and files on your PC are not touched.</p>
+    <p class="form-error" id="delete-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="btn-delete-cancel">Cancel</button>
+      <button type="button" class="btn btn-danger" id="btn-delete-confirm">Delete account</button>
+    </div>
+  </dialog>
+</main>
+
+<!--include footer-->
+</body>
+</html>

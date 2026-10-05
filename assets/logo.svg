@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#7a5cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#g)"/>
+  <!-- a folder, and inside it two PCs joined by a direct line -->
+  <path fill="#fff" d="M47 86a16 16 0 0 1 16-16h40a12 12 0 0 1 9.6 4.8l8.4 11.2h72a16 16 0 0 1 16 16v74a16 16 0 0 1-16 16H63a16 16 0 0 1-16-16z"/>
+  <g fill="#6a76ff" stroke="#6a76ff">
+    <path d="M100 144h56" stroke-width="10" stroke-linecap="round" fill="none"/>
+    <circle cx="97" cy="144" r="15" stroke="none"/>
+    <circle cx="159" cy="144" r="15" stroke="none"/>
+  </g>
+</svg>

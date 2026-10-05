@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FriendsShare social preview (1200x630)</title>
+<!-- Never served. Render this page at exactly 1200x630 and save it as server/site/img/og.png. Fully self-contained: system fonts, inline SVG, inline CSS. -->
+<style>
+  :root {
+    --bg: #0e1020;
+    --surface: #161933;
+    --surface-2: #1e2245;
+    --ink: #eceefd;
+    --ink-2: #b8bbdd;
+    --ink-3: #9094ba;
+    --brand: #93a4ff;
+    --brand-soft: #1c2052;
+    --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Roboto, sans-serif;
+    --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; background: var(--bg); }
+  body { position: relative; color: var(--ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+
+  .card { position: absolute; inset: 0; padding: 64px 72px 60px; display: grid; grid-template-columns: 540px 1fr; column-gap: 48px; }
+  .copy { display: flex; flex-direction: column; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 16px; font: 700 34px/1 var(--font-serif); letter-spacing: -0.01em; }
+  .brand svg { width: 56px; height: 56px; }
+  h1 { font: 700 66px/1.06 var(--font-serif); letter-spacing: -0.025em; }
+  .tag { font-size: 27px; line-height: 1.35; color: var(--ink-2); }
+  .tag strong { color: var(--ink); font-weight: 600; }
+
+  .art { align-self: center; }
+  .dg { display: block; width: 100%; height: auto; font-family: var(--font-sans); }
+  .dg-pc { fill: var(--surface); stroke: var(--ink); stroke-width: 3; }
+  .dg-stand { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linecap: round; }
+  .dg-folder { fill: var(--brand-soft); stroke: var(--brand); stroke-width: 3; stroke-linejoin: round; }
+  .dg-direct, .dg-flow { fill: none; stroke: var(--brand); }
+  .dg-direct { stroke-width: 3; opacity: 0.3; }
+  .dg-flow { stroke-width: 7; stroke-linecap: round; stroke-dasharray: 0.1 21; }
+  .dg-server { fill: var(--surface-2); stroke: var(--ink-3); stroke-width: 2.5; }
+  .dg-slot { fill: var(--surface); }
+  .dg-led { fill: var(--ink-3); }
+  .dg-intro { fill: none; stroke: var(--ink-3); stroke-width: 2; stroke-dasharray: 5 7; }
+  .dg-text, .dg-sub, .dg-label { text-anchor: middle; }
+  .dg-text { fill: var(--ink); font-size: 22px; font-weight: 600; }
+  .dg-sub { fill: var(--ink-3); font-size: 19px; }
+  .dg-label { fill: var(--brand); font-size: 20px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="copy">
+      <div class="brand">
+        <svg viewBox="0 0 256 256" aria-hidden="true">
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5b8cff"/>
+              <stop offset="1" stop-color="#7a5cff"/>
+            </linearGradient>
+          </defs>
+          <rect width="256" height="256" rx="58" fill="url(#g)"/>
+          <path fill="#fff" d="M47 86a16 16 0 0 1 16-16h40a12 12 0 0 1 9.6 4.8l8.4 11.2h72a16 16 0 0 1 16 16v74a16 16 0 0 1-16 16H63a16 16 0 0 1-16-16z"/>
+          <g fill="#6a76ff" stroke="#6a76ff">
+            <path d="M100 144h56" stroke-width="10" stroke-linecap="round" fill="none"/>
+            <circle cx="97" cy="144" r="15" stroke="none"/>
+            <circle cx="159" cy="144" r="15" stroke="none"/>
+          </g>
+        </svg>
+        <span>FriendsShare</span>
+      </div>
+
+      <h1>Too big for<br>Discord or email?<br>Send it straight<br>to your friend.</h1>
+
+      <p class="tag"><strong>No size limit.</strong> Your files go from PC to PC and never touch a server.</p>
+    </div>
+
+    <div class="art">
+      <svg class="dg" viewBox="0 0 480 336" aria-hidden="true">
+        <path class="dg-intro" d="M206 74L100 170"/>
+        <path class="dg-intro" d="M274 74L380 170"/>
+        <rect class="dg-server" x="180" y="14" width="120" height="60" rx="10"/>
+        <rect class="dg-slot" x="191" y="24" width="98" height="17" rx="4"/>
+        <rect class="dg-slot" x="191" y="47" width="98" height="17" rx="4"/>
+        <circle class="dg-led" cx="202" cy="32.5" r="3.5"/>
+        <circle class="dg-led" cx="202" cy="55.5" r="3.5"/>
+        <text class="dg-text" x="240" y="102">Server</text>
+        <text class="dg-sub" x="240" y="126">only introduces</text>
+
+        <rect class="dg-pc" x="16" y="172" width="124" height="88" rx="11"/>
+        <path class="dg-stand" d="M78 262v14M54 278h48"/>
+        <path class="dg-folder" d="M50 205a5 5 0 0 1 5-5h13a4 4 0 0 1 3 1.4l4 5.6h23a5 5 0 0 1 5 5v22a5 5 0 0 1-5 5H55a5 5 0 0 1-5-5z"/>
+        <text class="dg-text" x="78" y="316">Your PC</text>
+
+        <rect class="dg-pc" x="340" y="172" width="124" height="88" rx="11"/>
+        <path class="dg-stand" d="M402 262v14M378 278h48"/>
+        <path class="dg-folder" d="M374 205a5 5 0 0 1 5-5h13a4 4 0 0 1 3 1.4l4 5.6h23a5 5 0 0 1 5 5v22a5 5 0 0 1-5 5h-43a5 5 0 0 1-5-5z"/>
+        <text class="dg-text" x="402" y="316">Friend's PC</text>
+
+        <path class="dg-direct" d="M148 216H332"/>
+        <path class="dg-flow" d="M148 216H332"/>
+        <text class="dg-label" x="240" y="248">files, encrypted</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>

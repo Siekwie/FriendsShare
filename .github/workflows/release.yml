@@ -2,6 +2,10 @@
 #   git tag v1.2.0 && git push origin v1.2.0
 # Friends always get the newest build from
 #   https://github.com/Siekwie/FriendsShare/releases/latest/download/FriendsShare.exe
+#
+# Only builds made here are "official": the BUILD_SECRET repository secret is stamped into the app
+# (scripts/stamp-build.js) and the release carries build.json with the app's fingerprints. The
+# matchmaking server uses both to accept nothing but unmodified releases.
 name: Release
 
 on:
@@ -23,7 +27,11 @@ jobs:
       - run: npm ci
       # the app's version is the tag
       - run: npm version "$("${{ github.ref_name }}".TrimStart('v'))" --no-git-tag-version --allow-same-version
+      - run: node scripts/stamp-build.js
+        env:
+          BUILD_SECRET: ${{ secrets.BUILD_SECRET }}
       - run: npm run dist
-      - run: gh release create "${{ github.ref_name }}" dist/FriendsShare.exe --title "FriendsShare ${{ github.ref_name }}" --generate-notes
+      - run: node scripts/build-info.js
+      - run: gh release create "${{ github.ref_name }}" dist/FriendsShare.exe dist/build.json --title "FriendsShare ${{ github.ref_name }}" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

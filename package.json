@@ -1,7 +1,7 @@
 {
   "name": "friendsshare",
   "productName": "FriendsShare",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Share big folders with friends, directly from PC to PC",
   "author": "Siekwie",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -9,8 +9,13 @@
   "scripts": {
     "start": "electron .",
     "server": "node server/server.js",
-    "test": "node test/e2e.js",
-    "dist": "electron-builder --win portable --publish never"
+    "test": "npm --prefix server test && node test/run.js",
+    "dist": "electron-builder --win portable --publish never",
+    "icons": "electron scripts/make-icons.js",
+    "og": "electron scripts/make-og.js",
+    "screenshots": "electron scripts/screenshots.js --hidden",
+    "test:server": "npm --prefix server test",
+    "test:app": "node test/run.js"
   },
   "devDependencies": {
     "electron": "^38.0.0",
@@ -26,10 +31,18 @@
       "output": "dist"
     },
     "win": {
-      "target": "portable"
+      "target": "portable",
+      "icon": "build/icon.ico"
     },
     "portable": {
       "artifactName": "FriendsShare.exe"
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
     }
   }
 }

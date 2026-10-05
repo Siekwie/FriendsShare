@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Continue to your account – FriendsShare</title>
+<meta name="description" content="Confirm that you want to continue to your FriendsShare account.">
+<meta name="robots" content="noindex">
+<!--include head-->
+</head>
+<body>
+<!--include header-plain-->
+
+<main id="main" class="auth" tabindex="-1">
+  <div class="auth-wrap">
+    <section class="auth-card" aria-labelledby="link-h">
+      <h1 id="link-h">Continue as <!--if link_name-->{{link_name}}<!--endif--><!--if !link_name-->{{link_email}}<!--endif-->?</h1>
+
+      <dl class="who">
+        <!--if link_name-->
+        <div><dt>Name</dt><dd>{{link_name}}</dd></div>
+        <!--endif-->
+        <div><dt>Email</dt><dd>{{link_email}}</dd></div>
+      </dl>
+
+      <p class="auth-lede">This link came from the FriendsShare app on this PC, and continuing signs this browser in to that account.</p>
+      <p class="caution">Only continue if you just clicked Upgrade to Pro or Manage subscription in the app.</p>
+
+      <form class="continue" method="post" action="/auth/link">
+        <input type="hidden" name="code" value="{{link_code}}">
+        <input type="hidden" name="next" value="{{link_next}}">
+        <button type="submit" class="btn btn-primary">Continue</button>
+      </form>
+    </section>
+    <p class="auth-back"><a href="/">Cancel</a></p>
+  </div>
+</main>
+
+<!--include footer-->
+</body>
+</html>

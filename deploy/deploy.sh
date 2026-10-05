@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Deploys the matchmaking server from the committed HEAD: uploads the source, rebuilds the image,
-# restarts the container and waits until it reports healthy. Uncommitted changes are not deployed.
+# Deploys the server (website, accounts, matchmaking) from the committed HEAD: uploads the source,
+# rebuilds the image, restarts the container and waits until it reports healthy. Uncommitted
+# changes are not deployed.
 #
 #   deploy/deploy.sh <ssh-host>      (or set DEPLOY_HOST; run from Git Bash on Windows)
 #
-# The server keeps /srv/friendsshare/data (the list of registered share rooms, no files).
+# The server keeps /srv/friendsshare/.env (secrets, never in git; see deploy/env.example) and
+# /srv/friendsshare/data (accounts and registered share rooms, never any shared files).
 set -euo pipefail
 
 HOST="${1:-${DEPLOY_HOST:?usage: deploy/deploy.sh <ssh-host>}}"
@@ -25,6 +27,7 @@ git archive --format=tar HEAD server deploy | ssh "$HOST" "set -e
 
 ssh "$HOST" "set -e
   cd $DIR
+  test -f .env || { echo 'Missing $DIR/.env (see deploy/env.example)' >&2; exit 1; }
   docker compose -f app/deploy/compose.yml --project-directory . up -d --build --remove-orphans
   docker image prune -f >/dev/null
   if ! cmp -s app/deploy/friendsshare.caddy $SITES/friendsshare.caddy; then

@@ -1,135 +1,45 @@
-// FriendsShare matchmaking server.
-// It only introduces two apps to each other (WebRTC signaling). Files never pass through here, and
-// it never sees a share code: a room is named by the SHA-256 of the code.
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { WebSocketServer } = require('ws');
+// FriendsShare server: the website, accounts, Pro subscriptions, and the matchmaking that
+// introduces two apps to each other (WebRTC signaling). Files never pass through here, and it
+// never sees a share code: a room is named by the SHA-256 of the code.
+//
+// PORT and DATA_DIR work as before; everything else is configured in lib/config.js.
+const { loadConfig, describeConfig, ConfigError } = require('./lib/config');
+const { installProcessHandlers } = require('./lib/process');
+const { createServer } = require('./lib/server');
 
-const PORT = Number(process.env.PORT || 8080);
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
-const MAX_ROOMS_PER_SOCKET = 500;
+installProcessHandlers(process, { log: (line) => console.error(line), exit: (code) => process.exit(code) });
 
-// room -> { keyHash, exp }. Remembered across restarts so nobody else can claim a host's room.
-const rooms = new Map();
-// room -> socket of the host that is online right now
-const live = new Map();
-// socket id -> socket
-const clients = new Map();
-
-fs.mkdirSync(DATA_DIR, { recursive: true });
+let config;
 try {
-  for (const [room, rec] of Object.entries(JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8')))) rooms.set(room, rec);
-} catch {}
-
-let saveTimer = null;
-function save() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    fs.writeFile(ROOMS_FILE + '.tmp', JSON.stringify(Object.fromEntries(rooms)), (err) => {
-      if (!err) fs.rename(ROOMS_FILE + '.tmp', ROOMS_FILE, () => {});
-    });
-  }, 1000);
+  config = loadConfig();
+} catch (err) {
+  if (!(err instanceof ConfigError)) throw err;
+  console.error(`Configuration error: ${err.message}`);
+  process.exit(1);
 }
 
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
-const isRoom = (r) => typeof r === 'string' && /^[0-9a-f]{64}$/.test(r);
-const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
+const app = createServer({ config });
 
-function onMessage(ws, m) {
-  if (!m || !isRoom(m.room)) return;
-  const { room } = m;
-  const rec = rooms.get(room);
+app.listen(config.port).then(
+  ({ port }) => {
+    console.log(`FriendsShare server on :${port}`);
+    for (const line of describeConfig(config)) console.log(line);
+  },
+  (err) => {
+    console.error(`Could not listen on :${config.port}: ${err.message}`);
+    process.exit(1);
+  },
+);
 
-  if (m.t === 'host') {
-    if (typeof m.key !== 'string' || m.key.length > 100 || typeof m.exp !== 'number') return;
-    if (m.exp <= Date.now()) return send(ws, { t: 'err', room, code: 'expired' });
-    if (rec && rec.keyHash !== sha(m.key)) return send(ws, { t: 'err', room, code: 'taken' });
-    if (ws.hosting.size >= MAX_ROOMS_PER_SOCKET) return;
-    rooms.set(room, { keyHash: sha(m.key), exp: m.exp });
-    save();
-    live.set(room, ws);
-    ws.hosting.add(room);
-    send(ws, { t: 'hosted', room });
-  } else if (m.t === 'unhost') {
-    // the host revoked the code
-    if (!ws.hosting.has(room)) return;
-    ws.hosting.delete(room);
-    live.delete(room);
-    rooms.delete(room);
-    save();
-  } else if (m.t === 'join') {
-    if (rec && rec.exp <= Date.now()) return send(ws, { t: 'err', room, code: 'expired' });
-    const host = live.get(room);
-    if (!host) return send(ws, { t: 'err', room, code: rec ? 'offline' : 'unknown' });
-    if (ws.joined.size >= MAX_ROOMS_PER_SOCKET) return;
-    ws.joined.add(room);
-    send(ws, { t: 'joined', room, host: host.id });
-  } else if (m.t === 'sig') {
-    // relayed only between a room's host and someone who joined that room
-    const to = clients.get(m.to);
-    if (!to) return;
-    const host = live.get(room);
-    const ok = (host === ws && to.joined.has(room)) || (host === to && ws.joined.has(room));
-    if (ok) send(to, { t: 'sig', room, from: ws.id, data: m.data });
-  }
+// docker stop sends SIGTERM: tell the apps, finish what is running, close the database
+let stopping = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`${signal} received, shutting down`);
+    app.close().then(() => process.exit(0));
+    // docker waits ten seconds before it kills the container
+    setTimeout(() => process.exit(0), 5000).unref();
+  });
 }
-
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'content-type': 'text/plain' });
-  res.end('FriendsShare matchmaking is running.\n');
-});
-
-const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
-wss.on('connection', (ws) => {
-  ws.id = crypto.randomUUID();
-  ws.hosting = new Set();
-  ws.joined = new Set();
-  ws.alive = true;
-  clients.set(ws.id, ws);
-  ws.on('pong', () => (ws.alive = true));
-  ws.on('error', () => {});
-  ws.on('message', (raw) => {
-    let m;
-    try {
-      m = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    onMessage(ws, m);
-  });
-  ws.on('close', () => {
-    clients.delete(ws.id);
-    for (const room of ws.hosting) if (live.get(room) === ws) live.delete(room);
-  });
-});
-
-// drop dead connections, keep the others open through the proxy
-setInterval(() => {
-  for (const ws of wss.clients) {
-    if (!ws.alive) {
-      ws.terminate();
-      continue;
-    }
-    ws.alive = false;
-    ws.ping();
-  }
-}, 30000);
-
-// forget expired rooms
-setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  for (const [room, rec] of rooms) {
-    if (rec.exp > now) continue;
-    rooms.delete(room);
-    live.delete(room);
-    changed = true;
-  }
-  if (changed) save();
-}, 3600 * 1000);
-
-server.listen(PORT, () => console.log(`FriendsShare matchmaking on :${PORT}`));

@@ -1,4 +1,9 @@
 friendsshare.wiest-lab.eu {
+	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
+	# Operator endpoints are for inside the container only. The app refuses them when they come
+	# through a proxy; this is the second lock on the same door.
+	@internal path /internal /internal/*
+	respond @internal 404
 	reverse_proxy friendsshare:8080
 }

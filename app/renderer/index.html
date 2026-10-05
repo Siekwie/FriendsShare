@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws: wss:" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws: wss:; img-src 'self' data: https://avatars.githubusercontent.com https://*.googleusercontent.com" />
     <title>FriendsShare</title>
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -22,9 +22,26 @@
       </div>
       <ul id="list-guest"></ul>
 
-      <div class="footer">
-        <div id="conn" class="conn">Connecting…</div>
-        <button id="btn-update" class="upd" title="Checking for updates…"></button>
+      <div class="dock">
+        <button id="btn-account" class="account" type="button" title="Account">
+          <span id="acct-avatar" class="avatar"></span>
+          <span class="who">
+            <span id="acct-name" class="name">Sign in</span>
+            <span id="acct-plan" class="plan">Free</span>
+          </span>
+        </button>
+
+        <div class="footer">
+          <div id="conn" class="conn">Connecting…</div>
+          <div class="tools">
+            <button id="btn-settings" class="gear" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path fill="currentColor" fill-rule="evenodd" d="M9.54 3.97L10.09 1.17L13.91 1.17L14.46 3.97A8.4 8.4 0 0 1 15.94 4.58L18.31 2.99L21.01 5.69L19.42 8.06A8.4 8.4 0 0 1 20.03 9.54L22.83 10.09L22.83 13.91L20.03 14.46A8.4 8.4 0 0 1 19.42 15.94L21.01 18.31L18.31 21.01L15.94 19.42A8.4 8.4 0 0 1 14.46 20.03L13.91 22.83L10.09 22.83L9.54 20.03A8.4 8.4 0 0 1 8.06 19.42L5.69 21.01L2.99 18.31L4.58 15.94A8.4 8.4 0 0 1 3.97 14.46L1.17 13.91L1.17 10.09L3.97 9.54A8.4 8.4 0 0 1 4.58 8.06L2.99 5.69L5.69 2.99L8.06 4.58A8.4 8.4 0 0 1 9.54 3.97ZM15.6 12a3.6 3.6 0 1 0 -7.2 0a3.6 3.6 0 1 0 7.2 0Z" />
+              </svg>
+            </button>
+            <button id="btn-update" class="upd" title="Checking for updates…"></button>
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -33,11 +50,17 @@
     <dialog id="dlg-new">
       <form method="dialog">
         <h2>New folder</h2>
-        <p>A folder on this PC for the files you want to share.</p>
-        <input id="new-name" placeholder="Folder name" maxlength="80" required />
-        <div class="actions">
-          <button value="cancel" formnovalidate>Cancel</button>
+        <p>Create an empty folder in <span id="new-base" class="where"></span> and put the files you want to share into it.</p>
+        <div class="row">
+          <input id="new-name" class="grow" placeholder="Folder name" maxlength="80" required />
           <button value="ok" class="primary">Create</button>
+        </div>
+        <div class="or">or</div>
+        <p>Already have the files in a folder? Share that folder where it is. Nothing is copied.</p>
+        <button type="button" id="btn-existing">Share a folder I already have…</button>
+        <div id="new-error" class="error"></div>
+        <div class="actions">
+          <button type="button" data-cancel>Cancel</button>
         </div>
       </form>
     </dialog>
@@ -49,10 +72,71 @@
         <input id="join-code" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" required />
         <div id="join-error" class="error"></div>
         <div class="actions">
-          <button value="cancel" formnovalidate>Cancel</button>
+          <button type="button" data-cancel>Cancel</button>
           <button value="ok" class="primary">Add</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="dlg-settings">
+      <form method="dialog">
+        <h2>Settings</h2>
+
+        <div class="setting">
+          <div class="label">New folders are stored in</div>
+          <div class="row">
+            <div id="set-basedir" class="box grow"></div>
+            <button type="button" id="btn-basedir">Change…</button>
+          </div>
+          <div class="hint">Applies to folders you create or add from now on, your own and your friends'. Folders you already have stay where they are.</div>
+        </div>
+
+        <div class="setting">
+          <label class="check"><input type="checkbox" id="set-autostart" /><span>Start FriendsShare when Windows starts</span></label>
+          <div class="hint" id="autostart-hint"></div>
+        </div>
+
+        <div class="setting">
+          <label class="check"><input type="checkbox" id="set-tray" /><span>Keep running in the tray when I close the window</span></label>
+          <div class="hint">Friends can only download while FriendsShare is running.</div>
+        </div>
+
+        <div id="settings-error" class="error"></div>
+
+        <div class="about">
+          <h3>About</h3>
+          <div id="about-version"></div>
+          <div class="links">
+            <a href="https://friendsshare.wiest-lab.eu" data-link>Website</a>
+            <a href="https://github.com/Siekwie/FriendsShare" data-link>Source code</a>
+            <a href="https://github.com/Siekwie/FriendsShare/blob/main/LICENSE.md" data-link>License</a>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button value="close" class="primary" autofocus>Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- filled in by app.js: signed out, or the account with its plan -->
+    <dialog id="dlg-account" aria-labelledby="acct-title">
+      <h2 id="acct-title">Account</h2>
+      <div id="acct-body"></div>
+      <div id="acct-error" class="error"></div>
+      <div class="actions">
+        <button type="button" data-cancel>Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="dlg-limit" aria-labelledby="limit-title">
+      <h2 id="limit-title">Folder limit reached</h2>
+      <p id="limit-text"></p>
+      <div id="limit-error" class="error"></div>
+      <div class="actions">
+        <button type="button" data-cancel>Close</button>
+        <button type="button" id="btn-limit-upgrade" class="primary">Upgrade to Pro</button>
+      </div>
     </dialog>
 
     <script src="p2p.js"></script>

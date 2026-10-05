@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Imprint – FriendsShare</title>
+<meta name="description" content="Imprint of FriendsShare: who runs the service and how to contact them.">
+<!--include head-->
+</head>
+<body>
+<!--include header-plain-->
+
+<main id="main" class="legal" tabindex="-1">
+  <h1>Imprint</h1>
+  <p class="muted">Impressum. Information according to § 5 DDG. Last updated: 5 October 2026</p>
+
+  <address>{{operator_name}}<br>{{{operator_address}}}</address>
+
+  <h2>Contact</h2>
+  <!--if operator_email-->
+  <p><a href="mailto:{{operator_email}}">{{operator_email}}</a></p>
+  <!--endif-->
+  <!--if !operator_email-->
+  <p>Please write to the postal address above.</p>
+  <!--endif-->
+
+  <h2>Responsible for the content</h2>
+  <p>{{operator_name}}, address as above (§ 18 (2) MStV).</p>
+
+  <h2>Consumer dispute resolution</h2>
+  <p>We are neither willing nor obliged to take part in dispute resolution proceedings before a consumer arbitration board.</p>
+
+  <h2>Other companies</h2>
+  <p>FriendsShare is an independent project. It is not affiliated with, endorsed by or sponsored by Discord, GitHub, Google or Cloudflare.<!--if billing--> The same applies to Stripe, which processes the payments for Pro.<!--endif--></p>
+</main>
+
+<!--include footer-->
+</body>
+</html>

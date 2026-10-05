@@ -2,10 +2,14 @@
   "name": "friendsshare-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Matchmaking (WebRTC signaling) server for FriendsShare",
+  "description": "Website, accounts, Pro subscriptions and matchmaking (WebRTC signaling) for FriendsShare",
   "main": "server.js",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-timeout=120000 --test-force-exit \"test/*.test.js\""
   },
   "dependencies": {
     "ws": "^8.18.0"

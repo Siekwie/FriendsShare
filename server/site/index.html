@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FriendsShare: send big files straight to your friends</title>
+<meta name="description" content="FriendsShare sends a folder from your PC straight to a friend's PC, with no size limit and nothing stored on a server. For Windows.">
+<!--include head-->
+<link rel="canonical" href="{{site_url}}/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FriendsShare">
+<meta property="og:title" content="Too big for Discord or email? Send it straight to your friend.">
+<meta property="og:description" content="FriendsShare sends a folder from your PC to your friend's PC. No size limit, no upload, no server in between. For Windows.">
+<meta property="og:url" content="{{site_url}}/">
+<meta property="og:image" content="{{site_url}}/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="FriendsShare: two PCs joined by a direct line, under the headline Too big for Discord or email? Send it straight to your friend.">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<!--include header-->
+
+<main id="main" tabindex="-1">
+
+  <section class="hero" aria-labelledby="hero-h">
+    <div class="hero-copy">
+      <h1 id="hero-h">Too big for Discord or email? <span class="hero-h1-second">Send it straight to your friend.</span></h1>
+      <p class="hero-lede">FriendsShare sends a folder from your PC straight to your friend's PC. There is no size limit, on any plan, because your files are never uploaded anywhere.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary btn-lg" href="{{download_url}}">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+          Download for Windows
+        </a>
+        <a class="hero-link" href="{{repo_url}}" target="_blank" rel="noopener noreferrer">Source code on GitHub</a>
+      </div>
+      <p class="hero-meta"><!--if version-->Version {{version}} · <!--endif-->Windows 10/11, 64-bit · about 85 MB · free</p>
+      <p class="hero-meta">Windows shows a warning on first start because the app is not code-signed yet. <a href="#faq-smartscreen">What to click</a></p>
+    </div>
+    <figure class="shot">
+      <img src="/img/app-share.png" width="972" height="701" fetchpriority="high" alt="The FriendsShare app showing a shared folder with its share code and the files inside it.">
+      <figcaption>Your view: a folder, its share code and the files in it.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sect" id="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <div class="how">
+      <ol class="steps">
+        <li>
+          <h3>Create a folder</h3>
+          <p>In FriendsShare, click New and name the folder, or use a folder you already have. Put the files you want to share inside.</p>
+        </li>
+        <li>
+          <h3>Send the code</h3>
+          <p>Click Generate code and send the code to your friend, in Discord, by email or any other way. You choose how long it works, from 1 to 365 days.</p>
+        </li>
+        <li>
+          <h3>Your friend downloads</h3>
+          <p>They click Add code and paste it. They see the file list, tick what they want and click Download selected. Later changes sync by themselves.</p>
+        </li>
+      </ol>
+      <figure class="shot">
+        <img src="/img/app-download.png" width="972" height="701" loading="lazy" decoding="async" alt="The FriendsShare app on a friend's PC: a list of files with tick boxes and a Download selected button.">
+        <figcaption>Your friend's view: tick the files, then Download selected.</figcaption>
+      </figure>
+    </div>
+    <p class="aside">Both of you need the app, and both PCs have to be on while files move. That is the price of never storing them on a server.</p>
+  </section>
+
+  <section class="sect" id="features" aria-labelledby="features-h">
+    <h2 id="features-h">What you get</h2>
+    <dl class="features">
+      <div>
+        <dt>No size limit</dt>
+        <dd>FriendsShare sets no limit on the size of a file or a folder, on any plan. Your files go straight from your PC to your friend's, so there is no upload quota to run into.</dd>
+      </div>
+      <div>
+        <dt>Direct and private</dt>
+        <dd>Files travel directly between the two PCs over an encrypted connection. They are never uploaded to a server, and the server never learns the share code, the file names or what is inside.</dd>
+      </div>
+      <div>
+        <dt>Pick what you download</dt>
+        <dd>Your friend sees the list of files first and ticks the ones they want. Nothing is downloaded until they click Download selected.</dd>
+      </div>
+      <div>
+        <dt>Resumes and stays in sync</dt>
+        <dd>An interrupted download continues where it stopped. New and changed files are downloaded again when the app starts, every 10 minutes, or when you click Sync now.</dd>
+      </div>
+      <div>
+        <dt>Codes that expire</dt>
+        <dd>Every share code works for 1 to 365 days, as you choose. Replace the code at any time and the old one stops working.</dd>
+      </div>
+      <div>
+        <dt>Runs quietly in the tray</dt>
+        <dd>FriendsShare sits in the tray so friends can download while you do something else. Starting it with Windows is optional.</dd>
+      </div>
+      <div>
+        <dt>Updates itself</dt>
+        <dd>A small circle in the app turns green when a new version is out. Click it and the app updates and restarts.</dd>
+      </div>
+      <div>
+        <dt>Source available</dt>
+        <dd>The code is public on <a href="{{repo_url}}" target="_blank" rel="noopener noreferrer">GitHub</a> under the PolyForm Noncommercial license: free for personal use, with commercial use reserved to the author.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="sect" id="where" aria-labelledby="where-h">
+    <h2 id="where-h">Where your files go</h2>
+    <p class="lede">From your PC to your friend's PC, and nowhere else.</p>
+    <div class="where">
+      <div class="where-text">
+        <ul class="points">
+          <li><strong>Direct and encrypted.</strong> The two apps open a direct, encrypted connection. Your files are never uploaded to a server or stored on one.</li>
+          <li><strong>The server only introduces.</strong> A small matchmaking server tells the two apps how to find each other. It sees a scrambled fingerprint (SHA-256) of the code and the connection handshake. It never sees the code, the file names or the files.</li>
+          <li><strong>One thing to know.</strong> Because the two PCs connect directly, they see each other's IP address, as in any direct connection.</li>
+        </ul>
+        <!--if operator-->
+        <p class="muted small">All the details are on the <a href="/privacy">privacy page</a>.</p>
+        <!--endif-->
+      </div>
+      <figure class="diagram">
+        <svg class="dg" viewBox="0 0 480 336" role="img" aria-labelledby="dg-title">
+          <title id="dg-title">Your PC and your friend's PC are joined by a direct line that carries the files. A server sits above them and only introduces the two.</title>
+          <path class="dg-intro" d="M206 74L100 170"/>
+          <path class="dg-intro" d="M274 74L380 170"/>
+          <rect class="dg-server" x="180" y="14" width="120" height="60" rx="10"/>
+          <rect class="dg-slot" x="191" y="24" width="98" height="17" rx="4"/>
+          <rect class="dg-slot" x="191" y="47" width="98" height="17" rx="4"/>
+          <circle class="dg-led" cx="202" cy="32.5" r="3.5"/>
+          <circle class="dg-led" cx="202" cy="55.5" r="3.5"/>
+          <text class="dg-text" x="240" y="102">Server</text>
+          <text class="dg-sub" x="240" y="126">only introduces</text>
+
+          <rect class="dg-pc" x="16" y="172" width="124" height="88" rx="11"/>
+          <path class="dg-stand" d="M78 262v14M54 278h48"/>
+          <path class="dg-folder" d="M50 205a5 5 0 0 1 5-5h13a4 4 0 0 1 3 1.4l4 5.6h23a5 5 0 0 1 5 5v22a5 5 0 0 1-5 5H55a5 5 0 0 1-5-5z"/>
+          <text class="dg-text" x="78" y="316">Your PC</text>
+
+          <rect class="dg-pc" x="340" y="172" width="124" height="88" rx="11"/>
+          <path class="dg-stand" d="M402 262v14M378 278h48"/>
+          <path class="dg-folder" d="M374 205a5 5 0 0 1 5-5h13a4 4 0 0 1 3 1.4l4 5.6h23a5 5 0 0 1 5 5v22a5 5 0 0 1-5 5h-43a5 5 0 0 1-5-5z"/>
+          <text class="dg-text" x="402" y="316">Friend's PC</text>
+
+          <path class="dg-direct" d="M148 216H332"/>
+          <path class="dg-flow" d="M148 216H332"/>
+          <text class="dg-label" x="240" y="248">files, encrypted</text>
+        </svg>
+      </figure>
+    </div>
+  </section>
+
+  <!--if billing-->
+  <section class="sect" id="pricing" aria-labelledby="pricing-h">
+    <h2 id="pricing-h">Pricing</h2>
+    <p class="lede">Start free. Pay only if you need more than {{free_limit}} folders at a time. The size of your files is never part of the price.</p>
+    <div class="plans">
+      <div class="plan">
+        <h3>Free</h3>
+        <p class="plan-figure">{{free_limit}} folders<small>at a time, no account needed</small></p>
+        <ul class="ticks">
+          <li>No limit on file size</li>
+          <li>Folders you share and folders you received both count. Remove one to free a slot.</li>
+          <li>Everything else works the same as in Pro</li>
+        </ul>
+        <a class="btn" href="{{download_url}}">Download for Windows</a>
+      </div>
+      <div class="plan plan-pro">
+        <h3>Pro</h3>
+        <p class="plan-figure">{{price_yearly_per_month}} per month<small>billed yearly as {{price_yearly}}, or {{price_monthly}} month to month</small></p>
+        <ul class="ticks">
+          <li>Unlimited folders</li>
+          <li>Signed in on up to 5 PCs at the same time</li>
+          <li>No limit on file size, same as Free</li>
+          <li>Cancel any time. Pro then runs to the end of the period you paid for.</li>
+          <li>Needs sign-in with GitHub or Google</li>
+        </ul>
+        <a class="btn btn-primary" href="/account">Get Pro</a>
+      </div>
+    </div>
+    <p class="aside">When Pro ends, folders beyond the first {{free_limit}} are paused. Nothing is deleted.</p>
+  </section>
+  <!--endif-->
+  <!--if !billing-->
+  <section class="sect" id="pricing" aria-labelledby="pricing-h">
+    <h2 id="pricing-h">Pricing</h2>
+    <p class="lede">Everything is free for now. No account, no payment, and no limit on the size of your files.</p>
+  </section>
+  <!--endif-->
+
+  <section class="sect" id="faq" aria-labelledby="faq-h">
+    <h2 id="faq-h">Questions and answers</h2>
+    <div class="faq">
+      <details>
+        <summary>Is there a size limit?</summary>
+        <p>No. FriendsShare puts no limit on the size of a file or a folder, on any plan. Files go straight from one PC to the other and are never stored on a server, so there is no storage to run out of. How fast it goes depends on both internet connections.</p>
+      </details>
+      <details>
+        <summary>Do we both need to be online?</summary>
+        <p>Yes. Both PCs have to be on, with FriendsShare running, while files move. The app sits in the tray, and starting it with Windows is optional, so it can stay running in the background. Nothing is stored on a server, so there is nothing to download while the sharing PC is off.</p>
+      </details>
+      <details>
+        <summary>What does the server see?</summary>
+        <p>The server only introduces the two apps to each other. It sees a scrambled fingerprint (a SHA-256 hash) of the share code and the connection handshake, plus your IP address and the app version while the app is connected. It never sees the share code itself, the file names or the files. The two PCs also see each other's IP address, as in any direct connection.</p>
+      </details>
+      <details id="faq-smartscreen">
+        <summary>Windows says "Windows protected your PC". What do I do?</summary>
+        <p>Windows shows this for apps it does not know yet. FriendsShare is not code-signed yet, so Windows cannot tell who made it. Click More info, then Run anyway. Only do this for a copy you downloaded from this site or from the FriendsShare releases on GitHub. The source code is public if you want to check what the app does.</p>
+      </details>
+      <details>
+        <summary>It cannot connect. What now?</summary>
+        <p>First check that both PCs are on, both apps are running, and the code has not expired or been replaced. If that is fine, the cause is usually the network. A few strict networks block direct connections: some mobile hotspots, and some university or company networks. If both of you are on such a network, FriendsShare cannot connect you. There is deliberately no relay server, because a relay would mean your files pass through a server. Switching one of the two PCs to another network, for example home Wi-Fi, usually solves it.</p>
+      </details>
+      <details>
+        <summary>Is there a version for Mac or Linux?</summary>
+        <p>Not at the moment. FriendsShare runs on Windows 10 and 11 (64-bit) only for now. Both you and your friend need the app, so both of you need Windows.</p>
+      </details>
+      <!--if billing-->
+      <details>
+        <summary>What counts as a folder?</summary>
+        <p>On the Free plan you can have up to {{free_limit}} folders at a time. Every folder you share and every folder you received from a friend counts. Remove one to free a slot. Removing a folder from FriendsShare never deletes any files.</p>
+      </details>
+      <details>
+        <summary>What happens when Pro ends?</summary>
+        <p>Pro runs to the end of the period you paid for. After that your account is on the Free plan: the first {{free_limit}} folders keep working and the rest are paused. Nothing is deleted.</p>
+      </details>
+      <details>
+        <summary>How do I cancel Pro?</summary>
+        <p>Sign in, open your account and click Manage subscription. That opens a page on Stripe where you can cancel. Pro then keeps running until the end of the period you paid for.</p>
+      </details>
+      <!--endif-->
+      <details>
+        <summary>Is it open source?</summary>
+        <p>The source code is public on GitHub, but the license is PolyForm Noncommercial. That is source-available rather than open source in the strict sense. You can read, run and change it for personal, noncommercial use. Commercial use is reserved to the author. A copy you build yourself cannot use the official server, but you can run your own.</p>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<!--include footer-->
+</body>
+</html>

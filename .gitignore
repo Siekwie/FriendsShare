@@ -2,3 +2,6 @@ node_modules/
 dist/
 server/data/
 .test-tmp/
+# the official build key, written by CI (scripts/stamp-build.js)
+app/build.json
+.env

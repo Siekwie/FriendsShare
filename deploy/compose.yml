@@ -1,5 +1,5 @@
-# FriendsShare matchmaking server, behind the shared Caddy proxy.
-# deploy/deploy.sh runs this from /srv/friendsshare, which holds app/ (the source) and data/:
+# FriendsShare server (website, accounts, matchmaking), behind the shared Caddy proxy.
+# deploy/deploy.sh runs this from /srv/friendsshare, which holds app/ (the source), data/ and .env:
 #   docker compose -f app/deploy/compose.yml --project-directory . up -d --build
 name: friendsshare
 
@@ -8,6 +8,12 @@ services:
     build: ./app/server
     container_name: friendsshare
     restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8080
+      DATA_DIR: /data
+      # Caddy is the one proxy in front; it reports the client address in X-Forwarded-For
+      TRUST_PROXY: 1
     volumes:
       - ./data:/data
     # No published ports: only the proxy, on the same Docker network, can reach the app.

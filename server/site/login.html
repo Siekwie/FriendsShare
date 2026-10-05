@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in – FriendsShare</title>
+<meta name="description" content="Sign in to FriendsShare with GitHub or Google.">
+<meta name="robots" content="noindex">
+<!--include head-->
+<script src="/js/login.js" defer></script>
+</head>
+<body>
+<!--include header-plain-->
+
+<main id="main" class="auth" tabindex="-1">
+  <div class="auth-wrap">
+    <section class="auth-card" aria-labelledby="login-h">
+      <h1 id="login-h">Sign in to FriendsShare</h1>
+      <p class="auth-lede" id="login-lede"><!--if billing-->Signing in is optional. The free plan works without an account, and you need one only for Pro.<!--endif--><!--if !billing-->Signing in is optional. FriendsShare works without an account.<!--endif--></p>
+
+      <p class="caution" id="app-caution" hidden>Only continue if you just clicked "Sign in" in the FriendsShare app.</p>
+      <p class="notice notice-error" id="login-error" role="alert" hidden></p>
+      <p class="muted" id="login-checking" role="status" hidden>Checking whether you are already signed in…</p>
+
+      <div class="continue" id="login-continue" hidden>
+        <button type="button" class="btn btn-primary" id="continue-btn">Continue</button>
+        <button type="button" class="btn" id="switch-btn">Use a different account</button>
+        <p class="form-error" id="continue-error" role="alert" hidden></p>
+      </div>
+
+      <div class="auth-buttons" id="login-providers">
+        <!--if github_login-->
+        <a class="btn" id="login-github" href="/auth/github" rel="nofollow">Continue with GitHub</a>
+        <!--endif-->
+        <!--if google_login-->
+        <a class="btn" id="login-google" href="/auth/google" rel="nofollow">Continue with Google</a>
+        <!--endif-->
+        <!--if !any_login-->
+        <p class="notice">Sign-in is not available yet. Everything else in FriendsShare works without an account.</p>
+        <!--endif-->
+      </div>
+
+      <!--if any_login-->
+      <p class="auth-note muted small">FriendsShare uses your sign-in only to recognise you and your plan. It receives your name, email address and picture. Nothing is posted in your name, and nothing else is read.</p>
+      <!--endif-->
+    </section>
+    <p class="auth-back">
+      <a href="/">Back to the start page</a>
+      <a href="/account" id="back-account" hidden>Back to your account</a>
+      <!--if operator-->
+      <a href="/privacy">How your data is used</a>
+      <!--endif-->
+    </p>
+  </div>
+</main>
+
+<!--include footer-->
+</body>
+</html>
