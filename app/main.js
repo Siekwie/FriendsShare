@@ -243,7 +243,7 @@ const api = {
 };
 
 // Self-update from the latest GitHub release. The portable build runs from a temp dir; the real
-// exe is PORTABLE_EXECUTABLE_FILE, and Windows lets us rename it while it runs.
+// exe is PORTABLE_EXECUTABLE_FILE.
 const RELEASE_API = 'https://api.github.com/repos/Siekwie/FriendsShare/releases/latest';
 const RELEASE_URL_PREFIX = 'https://github.com/Siekwie/FriendsShare/';
 const ASSET_NAME = 'FriendsShare.exe';
@@ -292,25 +292,25 @@ api['update:install'] = async () => {
   if (installing) throw new Error('Already updating');
   installing = true;
   const next = portableExe + '.new';
-  const old = portableExe + '.old';
   try {
     await downloadTo(next, latest.url, latest.size);
-    await fsp.rm(old, { force: true });
-    await fsp.rename(portableExe, old);
-    try {
-      await fsp.rename(next, portableExe);
-    } catch (err) {
-      await fsp.rename(old, portableExe).catch(() => {});
-      throw err;
-    }
   } catch (err) {
     await fsp.rm(next, { force: true }).catch(() => {});
     installing = false;
     throw new Error(`Update failed: ${err.message}`);
   }
-  // the new instance must be able to take the single-instance lock
-  app.releaseSingleInstanceLock();
-  spawn(portableExe, [], { detached: true, stdio: 'ignore' }).unref();
+  // The exe is locked for as long as this app runs, so a hidden helper outlives it: once a second
+  // it tries to put the new exe in place, and starts it as soon as that works. (cmd rather than
+  // PowerShell, which does not run without a console.)
+  const helper =
+    'for /l %i in (1,1,60) do @(move /y "%FS_UPDATE_NEW%" "%FS_UPDATE_EXE%" >nul 2>&1 && (start "" "%FS_UPDATE_EXE%" & exit) || ping -n 2 127.0.0.1 >nul)';
+  spawn('cmd.exe', ['/d', '/s', '/c', `"${helper}"`], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+    env: { ...process.env, FS_UPDATE_NEW: next, FS_UPDATE_EXE: portableExe },
+  }).unref();
   app.quit();
   return { restarting: true };
 };
@@ -336,10 +336,9 @@ async function downloadTo(file, url, size) {
   if (done !== size) throw new Error('Downloaded file has the wrong size');
 }
 
-// Clears what an earlier update left behind (the old exe may still be closing; retry next start).
+// Clears the download of an update that was not installed.
 function cleanupUpdate() {
-  if (!portableExe) return;
-  for (const f of [portableExe + '.old', portableExe + '.new']) fsp.rm(f, { force: true }).catch(() => {});
+  if (portableExe) fsp.rm(portableExe + '.new', { force: true }).catch(() => {});
 }
 
 function createWindow() {
