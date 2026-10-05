@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws: wss:" />
+    <title>FriendsShare</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside>
+      <div class="brand">FriendsShare</div>
+
+      <div class="group">
+        <span>My folders</span>
+        <button id="btn-new" class="small">+ New</button>
+      </div>
+      <ul id="list-host"></ul>
+
+      <div class="group">
+        <span>From friends</span>
+        <button id="btn-join" class="small">+ Add code</button>
+      </div>
+      <ul id="list-guest"></ul>
+
+      <div id="conn" class="conn">Connecting…</div>
+    </aside>
+
+    <main id="detail"></main>
+
+    <dialog id="dlg-new">
+      <form method="dialog">
+        <h2>New folder</h2>
+        <p>A folder on this PC for the files you want to share.</p>
+        <input id="new-name" placeholder="Folder name" maxlength="80" required />
+        <div class="actions">
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button value="ok" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="dlg-join">
+      <form method="dialog">
+        <h2>Add a friend's code</h2>
+        <p>Paste the share code your friend sent you.</p>
+        <input id="join-code" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" required />
+        <div id="join-error" class="error"></div>
+        <div class="actions">
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button value="ok" class="primary">Add</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="p2p.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

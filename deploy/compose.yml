@@ -1,0 +1,18 @@
+# FriendsShare matchmaking server, behind the shared Caddy proxy.
+# deploy/deploy.sh runs this from /srv/friendsshare, which holds app/ (the source) and data/:
+#   docker compose -f app/deploy/compose.yml --project-directory . up -d --build
+name: friendsshare
+
+services:
+  friendsshare:
+    build: ./app/server
+    container_name: friendsshare
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    # No published ports: only the proxy, on the same Docker network, can reach the app.
+    networks: [web]
+
+networks:
+  web:
+    external: true

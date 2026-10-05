@@ -1,0 +1,35 @@
+{
+  "name": "friendsshare",
+  "productName": "FriendsShare",
+  "version": "1.0.0",
+  "description": "Share big folders with friends, directly from PC to PC",
+  "author": "Siekwie",
+  "license": "MIT",
+  "main": "app/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/server.js",
+    "test": "node test/e2e.js",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0",
+    "ws": "^8.18.0"
+  },
+  "build": {
+    "appId": "eu.wiest-lab.friendsshare",
+    "files": [
+      "app/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable"
+    },
+    "portable": {
+      "artifactName": "FriendsShare.exe"
+    }
+  }
+}
