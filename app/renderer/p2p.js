@@ -41,7 +41,7 @@ const p2p = (() => {
   const MESSAGES = {
     server: 'No connection to the matchmaking server. Check your internet connection.',
     offline: "Your friend's app is not running right now. It will sync once they are online.",
-    unknown: "Code not found. Check the code, and that your friend's app is running.",
+    unknown: "Code not found. Check the code, and that your friend's app is running and up to date.",
     expired: 'This share has expired.',
     limit: 'The folder limit of your plan is reached, so this folder is paused.',
     blocked: 'This share code has been blocked and cannot be used.',

@@ -1,7 +1,9 @@
 // The parts of the main process that do not need a window: the decisions of official builds, the
 // proof, the addresses, and the whole sign-in hand-over, played against the real server in-process.
 //   node test/unit.js
+const { spawnSync } = require('child_process');
 const crypto = require('crypto');
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const t = require('./lib');
@@ -11,6 +13,7 @@ const { buildKey, makeProof } = require('../server/lib/builds');
 const tree = require('../app/tree');
 const folder = require('../app/folder');
 const { createRemoteStore } = require('../app/remote');
+const { createUpdater, homeOf, isNewer, swapCommand } = require('../app/update');
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sorted = (list) => [...list].sort();
@@ -497,6 +500,177 @@ await t.scenario('The owner\'s file list is stored apart from the settings, safe
   t.check((await store.migrate(shares)) === true && shares.every((s) => !('remote' in s)) && shares[0].chosen === true, 'lists in the old place are taken out of the shares');
   t.check((await store.read('a')).files.length === 5 && (await store.read('d')).files.length === 0 && (await store.read('c')) === null, 'and are in files of their own');
   t.check((await store.migrate(shares)) === false, 'which is done once');
+});
+
+// ---- self-update ----
+
+await t.scenario('Self-update: no administrator rights needed, and nobody is left without the app', async (cleanup) => {
+  const base = t.resetDir(path.join(t.tmpRoot, 'unit-update'));
+  cleanup(() => t.resetRights(base));
+  const NEW = crypto.randomBytes(300 * 1024);
+  const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file) : null);
+  const isNew = (file) => Boolean(read(file)) && read(file).equals(NEW);
+
+  // GitHub, as far as an update needs it
+  const release = { version: '1.3.0', size: NEW.length };
+  const fetchFn = async (url) => {
+    if (!url.startsWith('https://api.github.com/')) return new Response(NEW);
+    const asset = { name: 'FriendsShare.exe', size: release.size, browser_download_url: `https://github.com/Siekwie/FriendsShare/releases/download/v${release.version}/FriendsShare.exe` };
+    return new Response(JSON.stringify({ tag_name: `v${release.version}`, assets: [asset] }));
+  };
+  // Nothing is started here: what would be is noted. started: whether Windows starts it.
+  const spawner = (started) => {
+    const calls = [];
+    const spawn = (cmd, args, options) => {
+      const child = new EventEmitter();
+      child.unref = () => {};
+      calls.push({ cmd, args, options });
+      setImmediate(() => (started ? child.emit('spawn') : child.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }))));
+      return child;
+    };
+    return { calls, spawn };
+  };
+  // A PC: the folder where the person keeps the exe (place), and the profile. exe: false is the app
+  // run from source, a name is another exe than the one in `place` (a copy in the profile).
+  const pc = (name, { version = '1.2.1', started = true, exe, argv = [] } = {}) => {
+    const dir = t.resetDir(path.join(base, name));
+    const place = path.join(dir, 'place');
+    const profile = path.join(dir, 'profile', 'update');
+    fs.mkdirSync(place);
+    fs.mkdirSync(profile, { recursive: true });
+    const placed = path.join(place, 'FriendsShare.exe');
+    fs.writeFileSync(placed, 'the old exe');
+    const running = exe === false ? null : exe ? path.join(profile, exe) : placed;
+    const { calls, spawn } = spawner(started);
+    const progress = [];
+    const updater = createUpdater({ fetch: fetchFn, spawn, exe: running, home: homeOf(argv, running, profile), dir: () => profile, version, onProgress: (pct) => progress.push(pct) });
+    return { place, placed, profile, calls, progress, updater, copy: (v) => path.join(profile, `FriendsShare-${v}.exe`) };
+  };
+
+  t.check(isNewer('1.2.1', '1.2.0') && isNewer('v1.10.0', '1.9.9') && !isNewer('1.2.0', '1.2.0') && !isNewer('1.2', '1.2.0') && !isNewer('1.1.9', '1.2.0'), 'versions are compared number by number');
+
+  // ---- the usual case: the exe is in a folder of the person's own ----
+  const usual = pc('usual');
+  t.check(same(await usual.updater.check(), { status: 'available', current: '1.2.1', latest: '1.3.0' }), 'a newer release is found');
+  t.check(same(await usual.updater.install(), { restarting: true }), 'and installed');
+  t.check(isNew(`${usual.placed}.new`) && read(usual.placed).toString() === 'the old exe', 'the new exe is downloaded next to the old one, which is still in use');
+  const helper = usual.calls[0];
+  t.check(usual.calls.length === 1 && helper.cmd === 'cmd.exe' && helper.options.detached && helper.options.windowsHide && same(helper.args, ['/d', '/s', '/c', `"${swapCommand()}"`]), 'a hidden helper that outlives the app puts it in place');
+  t.check(helper.options.env.FS_UPDATE_NEW === `${usual.placed}.new` && helper.options.env.FS_UPDATE_EXE === usual.placed && helper.options.env.FS_UPDATE_COPY === usual.copy('1.3.0'), 'it is told the new exe, the old one, and where the new one goes if it cannot take the old one\'s place');
+  t.check(usual.progress.at(-1) === 100 && fs.readdirSync(usual.profile).length === 0, 'the window hears how far the download is, and nothing is put into the profile');
+
+  // ---- what the helper does, in a real cmd. Only what it would start is written down instead. ----
+  const helperDir = t.resetDir(path.join(base, 'helper'));
+  const note = path.join(helperDir, 'note.cmd');
+  fs.writeFileSync(note, '@echo %*>>"%FS_TEST_LOG%"\r\n');
+  const runHelper = (name, { locked = false, noProfile = false } = {}) => {
+    const dir = t.resetDir(path.join(helperDir, name));
+    const files = { next: path.join(dir, 'FriendsShare.exe.new'), exe: path.join(dir, 'place', 'FriendsShare.exe'), copy: path.join(dir, noProfile ? 'missing' : 'profile', 'FriendsShare-1.3.0.exe'), log: path.join(dir, 'started.log') };
+    fs.mkdirSync(path.dirname(files.exe));
+    fs.mkdirSync(path.join(dir, 'profile'));
+    fs.writeFileSync(files.next, NEW);
+    fs.writeFileSync(files.exe, 'the old exe');
+    if (locked) t.denyWrite(path.dirname(files.exe));
+    const line = swapCommand(2).replaceAll('start ""', 'call "%FS_TEST_START%"');
+    const res = spawnSync('cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+      stdio: 'ignore',
+      timeout: 60000,
+      env: { ...process.env, FS_UPDATE_NEW: files.next, FS_UPDATE_EXE: files.exe, FS_UPDATE_COPY: files.copy, FS_TEST_START: note, FS_TEST_LOG: files.log },
+    });
+    return { ...files, error: res.error, started: (read(files.log) || '').toString().split(/\r?\n/).map((l) => l.trim()).filter(Boolean) };
+  };
+  t.check(swapCommand().split('start ""').length === 4, '(the helper starts an exe in three places, which is what the next checks follow)');
+  const swapped = runHelper('swapped');
+  t.check(!swapped.error && isNew(swapped.exe) && !fs.existsSync(swapped.next) && same(swapped.started, [`"${swapped.exe}"`]), 'the helper puts the new exe in the place of the old one and starts it, once');
+  const kept = runHelper('kept', { locked: true });
+  t.check(!kept.error && read(kept.exe).toString() === 'the old exe' && isNew(kept.copy) && !fs.existsSync(kept.next), 'an exe that cannot be replaced stays, and the new one goes into the profile');
+  t.check(same(kept.started, [`"${kept.copy}" "--update-home=${kept.exe}"`]), 'and is started from there, told which exe it stands in for');
+  const stuck = runHelper('stuck', { locked: true, noProfile: true });
+  t.check(!stuck.error && same(stuck.started, [`"${stuck.exe}"`]) && read(stuck.exe).toString() === 'the old exe', 'when even that cannot be done, the old exe is started again');
+
+  // ---- the exe is where only an administrator may write (C:\Program Files, say) ----
+  const guarded = pc('guarded');
+  t.denyWrite(guarded.place);
+  let denied = null;
+  try {
+    fs.writeFileSync(path.join(guarded.place, 'probe'), 'x');
+  } catch (err) {
+    denied = err.code;
+  }
+  t.check(denied === 'EPERM' || denied === 'EACCES', `(a file cannot be made next to that exe: ${denied})`);
+  await guarded.updater.check();
+  t.check(same(await guarded.updater.install(), { restarting: true }), 'the update is installed all the same, without asking for administrator rights');
+  t.check(isNew(guarded.copy('1.3.0')) && same(fs.readdirSync(guarded.profile), ['FriendsShare-1.3.0.exe']) && same(fs.readdirSync(guarded.place), ['FriendsShare.exe']), 'the new exe is kept in the profile, complete, and nothing is left half done');
+  t.check(guarded.calls.length === 1 && guarded.calls[0].cmd === guarded.copy('1.3.0') && same(guarded.calls[0].args, [`--update-home=${guarded.placed}`]) && guarded.calls[0].options.detached, 'and it is started from there, told which exe it stands in for');
+
+  // the old exe is what the person starts the next time: it hands over to the copy
+  const next = pc('handover', { argv: ['--hidden'] });
+  fs.writeFileSync(next.copy('1.3.0'), NEW);
+  fs.writeFileSync(next.copy('1.2.9'), 'older');
+  fs.writeFileSync(next.copy('1.2.1'), 'this version');
+  fs.writeFileSync(path.join(next.profile, 'FriendsShare-9.9.9.exe.part'), 'half a download');
+  fs.writeFileSync(path.join(next.profile, 'FriendsShare-9.9.exe'), 'not a copy of ours');
+  t.check(next.updater.newerCopy() === next.copy('1.3.0'), 'the newest complete copy that is newer than the exe is the one to run');
+  t.check((await next.updater.handOver(['--hidden', '--update-home=C:\\somewhere\\else.exe'])) === true, 'the old exe hands over to it');
+  t.check(next.calls.length === 1 && next.calls[0].cmd === next.copy('1.3.0') && same(next.calls[0].args, ['--hidden', `--update-home=${next.placed}`]), 'with what it was started with, and its own place');
+
+  // the copy, running: it knows the exe it stands in for, which is what the next update goes for first
+  const standIn = pc('stand-in', { version: '1.2.5', exe: 'FriendsShare-1.2.5.exe' });
+  const standInArgs = ['--hidden', `--update-home=${standIn.placed}`];
+  const homeFor = (args, exe = standIn.copy('1.2.5')) => homeOf(args, exe, standIn.profile);
+  t.check(homeFor(standInArgs) === standIn.placed, 'a copy takes the exe it stands in for from its arguments');
+  t.check([[], ['--update-home=relative.exe'], [`--update-home=${standIn.place}`], [`--update-home=${path.join(standIn.place, 'gone.exe')}`]].every((args) => homeFor(args) === standIn.copy('1.2.5')), 'only an exe that is there counts: otherwise the copy is its own');
+  fs.writeFileSync(path.join(standIn.place, 'Other.exe'), 'another exe');
+  t.check(homeFor([`--update-home=${path.join(standIn.place, 'Other.exe')}`], standIn.placed) === standIn.placed, 'an exe that is not a copy in the profile cannot be told to stand in for another');
+  t.check(homeFor(standInArgs, null) === null, 'run from source there is no exe at all');
+  const healing = pc('healing', { version: '1.2.5', exe: 'FriendsShare-1.2.5.exe', argv: [] });
+  const healer = createUpdater({ fetch: fetchFn, spawn: spawner(true).spawn, exe: healing.copy('1.2.5'), home: homeOf([`--update-home=${healing.placed}`], healing.copy('1.2.5'), healing.profile), dir: () => healing.profile, version: '1.2.5' });
+  fs.writeFileSync(healing.copy('1.2.5'), 'the running copy');
+  t.check(healer.newerCopy() === null, 'a copy does not hand over to itself');
+  await healer.check();
+  await healer.install();
+  t.check(isNew(`${healing.placed}.new`) && same(fs.readdirSync(healing.profile), ['FriendsShare-1.2.5.exe']), 'once the old exe can be replaced (it was moved, say), the next update goes next to it again');
+
+  // ---- things that go wrong ----
+  const unstarted = pc('unstarted', { started: false });
+  t.denyWrite(unstarted.place);
+  await unstarted.updater.check();
+  const refused = await unstarted.updater.install().then(() => null, (err) => err.message);
+  t.check(refused === 'Update failed: the new version could not be started' && fs.readdirSync(unstarted.profile).length === 0, `a copy that Windows does not start is an error the person sees, and it is removed (${refused})`);
+  const again = await unstarted.updater.install().then(() => null, (err) => err.message);
+  t.check(again === refused, 'and the update can be tried again');
+
+  const short = pc('short');
+  release.size = NEW.length + 1;
+  await short.updater.check();
+  const cut = await short.updater.install().then(() => null, (err) => err.message);
+  release.size = NEW.length;
+  t.check(cut === 'Update failed: Downloaded file has the wrong size' && same(fs.readdirSync(short.place), ['FriendsShare.exe']) && short.calls.length === 0, 'a download of the wrong size is not installed and not kept');
+
+  const broken = pc('broken', { started: false });
+  fs.writeFileSync(broken.copy('1.3.0'), 'a copy that does not start');
+  fs.writeFileSync(broken.copy('1.2.9'), 'older');
+  t.check((await broken.updater.handOver([])) === false && !fs.existsSync(broken.copy('1.3.0')), 'a copy that Windows does not start is not handed over to: the exe runs itself, and the copy is removed');
+
+  const source = pc('source', { exe: false });
+  fs.writeFileSync(source.copy('1.3.0'), NEW);
+  await source.updater.check();
+  t.check(source.updater.newerCopy() === null && same(await source.updater.install(), { page: 'https://github.com/Siekwie/FriendsShare/releases/tag/v1.3.0' }) && source.calls.length === 0, 'run from source nothing is replaced or handed over: the release page is all there is');
+
+  // ---- cleaning up ----
+  const tidy = pc('tidy', { version: '1.3.0' });
+  for (const v of ['1.2.9', '1.3.0', '1.4.0']) fs.writeFileSync(tidy.copy(v), v);
+  fs.writeFileSync(`${tidy.copy('1.4.0')}.part`, 'half a download');
+  fs.writeFileSync(`${tidy.placed}.new`, 'a download that was not installed');
+  fs.writeFileSync(path.join(tidy.profile, 'notes.txt'), 'not ours');
+  await tidy.updater.cleanup();
+  t.check(sameSet(fs.readdirSync(tidy.profile), ['FriendsShare-1.4.0.exe', 'notes.txt']) && same(fs.readdirSync(tidy.place), ['FriendsShare.exe']), 'at a start, downloads that were not installed and the copies of this version or older are removed');
+  const selfTidy = pc('self-tidy', { version: '1.3.0', exe: 'FriendsShare-1.3.0.exe' });
+  for (const v of ['1.2.9', '1.3.0']) fs.writeFileSync(selfTidy.copy(v), v);
+  await selfTidy.updater.cleanup();
+  t.check(same(fs.readdirSync(selfTidy.profile), ['FriendsShare-1.3.0.exe']), 'but never the copy that is running');
 });
 
 t.finish();

@@ -12,6 +12,7 @@ const { createAccount, deriveSite, normalizeSignalUrl } = require('./account');
 const tree = require('./tree');
 const folder = require('./folder');
 const { createRemoteStore } = require('./remote');
+const { createUpdater, homeOf } = require('./update');
 
 const APP_ID = 'eu.wiest-lab.friendsshare';
 // the matchmaking address; the website is at the same origin (see deriveSite)
@@ -54,9 +55,14 @@ function openExternal(url) {
   return shell.openExternal(url);
 }
 
-// The portable build runs from a temp dir; the real exe, the one to register for "Start with
-// Windows" and to replace on an update, is PORTABLE_EXECUTABLE_FILE. Null when started from source.
+// The portable build runs from a temp dir; the real exe is PORTABLE_EXECUTABLE_FILE. Null when
+// started from source.
 const portableExe = process.env.PORTABLE_EXECUTABLE_FILE || null;
+// Where an update is kept that cannot take the place of the exe (see update.js).
+const updateDir = () => path.join(app.getPath('userData'), 'update');
+// The exe to register for "Start with Windows" and to replace on an update. That is the one above,
+// unless this is such an update, running in place of the exe it could not replace.
+const homeExe = homeOf(process.argv, portableExe, updateDir());
 // the startup entry launches the app straight into the tray
 const AUTOSTART_ARGS = ['--hidden'];
 const startHidden = process.argv.includes('--hidden');
@@ -87,6 +93,17 @@ const account = createAccount({
   reconnect: () => sendToWindow('net:reconnect'),
   // the person was in the browser; with a log file instead of a browser there is nothing to come back from
   bringToFront: () => !openLog && showWindow(),
+});
+
+// Self-update from the latest GitHub release (see update.js).
+const updater = createUpdater({
+  fetch: (url, init) => net.fetch(url, init),
+  spawn,
+  exe: portableExe,
+  home: homeExe,
+  dir: updateDir,
+  version: app.getVersion(),
+  onProgress: (pct) => sendToWindow('update:progress', pct),
 });
 
 const defaultBaseDir = () => (home ? path.join(home, 'shares') : path.join(app.getPath('documents'), 'FriendsShare'));
@@ -186,7 +203,7 @@ const publicSettings = () => ({ baseDir: getBaseDir(), tray: config.settings.tra
 // setting is on, because the person may have moved the exe since.
 function applyAutostart({ force = false } = {}) {
   if (!portableExe) return;
-  const entry = { path: portableExe, args: AUTOSTART_ARGS };
+  const entry = { path: homeExe, args: AUTOSTART_ARGS };
   const on = config.settings.autostart;
   // Windows lets the person switch an entry off in Task Manager. At startup an entry that already
   // points at this exe is left alone, since writing it again would switch it back on.
@@ -570,102 +587,21 @@ const api = {
   },
 };
 
-// Self-update from the latest GitHub release (see portableExe above for what gets replaced).
-const RELEASE_API = 'https://api.github.com/repos/Siekwie/FriendsShare/releases/latest';
-const RELEASE_URL_PREFIX = 'https://github.com/Siekwie/FriendsShare/';
-const ASSET_NAME = 'FriendsShare.exe';
-let latest = null; // { version, url, size, page } of the newest release, once a check found one
-let installing = false;
-
-const parseVersion = (v) => String(v).replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
-function isNewer(a, b) {
-  const x = parseVersion(a);
-  const y = parseVersion(b);
-  for (let i = 0; i < Math.max(x.length, y.length, 3); i++) {
-    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
-  }
-  return false;
-}
-
 // -> { status: 'current' | 'available' | 'error', current, latest?, error? }
-api['update:check'] = async () => {
-  const current = app.getVersion();
-  try {
-    const res = await net.fetch(RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
-    const rel = await res.json();
-    const asset = (rel.assets || []).find((a) => a.name === ASSET_NAME);
-    if (!rel.tag_name || !asset || !String(asset.browser_download_url).startsWith(RELEASE_URL_PREFIX)) throw new Error('No download in the latest release');
-    const version = parseVersion(rel.tag_name).join('.');
-    if (!isNewer(version, current)) {
-      latest = null;
-      return { status: 'current', current };
-    }
-    latest = { version, url: asset.browser_download_url, size: asset.size, page: `${RELEASE_URL_PREFIX}releases/tag/${rel.tag_name}` };
-    return { status: 'available', current, latest: version };
-  } catch (err) {
-    return { status: 'error', current, error: err.message };
-  }
-};
+api['update:check'] = () => updater.check();
 
 // Portable exe: download, swap, restart. Otherwise (dev) just open the release page.
 api['update:install'] = async () => {
-  if (!latest) throw new Error('No update available');
-  if (!portableExe) {
-    openExternal(latest.page);
+  const done = await updater.install();
+  if (done.page) {
+    openExternal(done.page);
     return { opened: true };
   }
-  if (installing) throw new Error('Already updating');
-  installing = true;
-  const next = portableExe + '.new';
-  try {
-    await downloadTo(next, latest.url, latest.size);
-  } catch (err) {
-    await fsp.rm(next, { force: true }).catch(() => {});
-    installing = false;
-    throw new Error(`Update failed: ${err.message}`);
-  }
-  // The exe is locked for as long as this app runs, so a hidden helper outlives it: once a second
-  // it tries to put the new exe in place, and starts it as soon as that works. (cmd rather than
-  // PowerShell, which does not run without a console.)
-  const helper =
-    'for /l %i in (1,1,60) do @(move /y "%FS_UPDATE_NEW%" "%FS_UPDATE_EXE%" >nul 2>&1 && (start "" "%FS_UPDATE_EXE%" & exit) || ping -n 2 127.0.0.1 >nul)';
-  spawn('cmd.exe', ['/d', '/s', '/c', `"${helper}"`], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-    windowsVerbatimArguments: true,
-    env: { ...process.env, FS_UPDATE_NEW: next, FS_UPDATE_EXE: portableExe },
-  }).unref();
+  // what runs next must be able to take the single-instance lock, however long this one takes to end
+  app.releaseSingleInstanceLock();
   app.quit();
   return { restarting: true };
 };
-
-async function downloadTo(file, url, size) {
-  if (!url.startsWith(RELEASE_URL_PREFIX)) throw new Error('Unexpected download address');
-  const res = await net.fetch(url);
-  if (!res.ok || !res.body) throw new Error(`Download answered ${res.status}`);
-  const fh = await fsp.open(file, 'w');
-  let done = 0;
-  let lastPct = -1;
-  try {
-    for await (const chunk of res.body) {
-      await fh.write(chunk);
-      done += chunk.length;
-      const pct = size ? Math.min(100, Math.floor((done / size) * 100)) : 0;
-      if (pct !== lastPct && win && !win.isDestroyed()) win.webContents.send('update:progress', pct);
-      lastPct = pct;
-    }
-  } finally {
-    await fh.close();
-  }
-  if (done !== size) throw new Error('Downloaded file has the wrong size');
-}
-
-// Clears the download of an update that was not installed.
-function cleanupUpdate() {
-  if (portableExe) fsp.rm(portableExe + '.new', { force: true }).catch(() => {});
-}
 
 // Brings the window back, from the tray or from being minimized.
 function showWindow() {
@@ -720,14 +656,9 @@ function createWindow() {
   win.on('closed', () => (win = null));
 }
 
-if (refusedSwitch) {
-  // An official build does not run with a debugger attached, or with another profile directory
-  // (--user-data-dir, which Electron honours by itself, would give one person several profiles, each
-  // with its own five free folders). Nothing has been touched yet.
-  app.exit(1);
-} else if (!app.requestSingleInstanceLock() && !home) {
-  app.quit();
-} else {
+// Everything from the single-instance lock on.
+function start() {
+  if (!app.requestSingleInstanceLock() && !home) return app.quit();
   app.on('second-instance', (_e, argv) => {
     // a startup entry that fires while the app already runs must not pop the window up
     if (!argv.includes('--hidden')) showWindow();
@@ -741,7 +672,7 @@ if (refusedSwitch) {
     account.init();
     // read once, now, so the first hello does not wait for it
     build.appHash();
-    cleanupUpdate();
+    updater.cleanup();
     for (const [channel, fn] of Object.entries(api)) ipcMain.handle(channel, (_e, ...args) => fn(...args));
     tray = createTray({
       open: showWindow,
@@ -755,4 +686,17 @@ if (refusedSwitch) {
     createWindow();
   });
   app.on('window-all-closed', () => app.quit());
+}
+
+if (refusedSwitch) {
+  // An official build does not run with a debugger attached, or with another profile directory
+  // (--user-data-dir, which Electron honours by itself, would give one person several profiles, each
+  // with its own five free folders). Nothing has been touched yet.
+  app.exit(1);
+} else if (updater.newerCopy()) {
+  // An update that could not replace this exe is kept in the profile and runs in its place (see
+  // update.js). When Windows does not start it, this one runs after all.
+  updater.handOver(process.argv.slice(1)).then((handed) => (handed ? app.exit(0) : start()));
+} else {
+  start();
 }

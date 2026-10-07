@@ -304,6 +304,13 @@ function denyRead(file) {
   if (res.status !== 0) throw new Error(`icacls could not deny reading ${file}: ${res.stdout}${res.stderr}`);
 }
 const allowRead = (file) => spawnSync('icacls', [file, '/remove:d', whoami()], { encoding: 'utf8' });
+// ... or make files in a folder (like a folder in C:\Program Files, for somebody who is not an
+// administrator). Undone by resetRights.
+function denyWrite(dir) {
+  // adding files, adding folders and deleting what is in it; looking into it stays allowed
+  const res = spawnSync('icacls', [dir, '/deny', `${whoami()}:(WD,AD,DC)`], { encoding: 'utf8' });
+  if (res.status !== 0) throw new Error(`icacls could not deny writing to ${dir}: ${res.stdout}${res.stderr}`);
+}
 // Takes back every denial under a folder, so that it can be deleted (a test that stopped half way)
 const resetRights = (dir) => fs.existsSync(dir) && spawnSync('icacls', [dir, '/reset', '/T', '/C', '/Q'], { encoding: 'utf8' });
 
@@ -354,7 +361,7 @@ function patchedApp(name, patches) {
 // appDir: another copy of the app to run (see releaseApp and patchedApp), not the one in this folder.
 async function startApp({ name, who, signal, seed = {}, env = {}, args = [], appDir = root }) {
   // a syntax error in the app would make Electron show its error box before anything can stop it
-  for (const file of ['main.js', 'build.js', 'account.js', 'preload.js', 'tray.js', 'tree.js', 'folder.js', 'remote.js', 'renderer/p2p.js', 'renderer/app.js']) {
+  for (const file of ['main.js', 'build.js', 'account.js', 'preload.js', 'tray.js', 'tree.js', 'folder.js', 'remote.js', 'update.js', 'renderer/p2p.js', 'renderer/app.js']) {
     const target = path.join(appDir, 'app', file);
     // an older version does not have all of these
     if (!fs.existsSync(target)) continue;
@@ -477,6 +484,7 @@ module.exports = {
   readTree,
   denyRead,
   allowRead,
+  denyWrite,
   resetRights,
   junction,
   releaseApp,

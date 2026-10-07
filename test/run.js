@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 
 const FILES = [
-  ['unit.js', 'decisions of official builds, addresses, the sign-in hand-over without a window'],
+  ['unit.js', 'decisions of official builds, addresses, the sign-in hand-over without a window, the self-update'],
   ['e2e.js', 'a folder syncs between two apps through a local server'],
   ['strict.js', 'a server that requires official builds, and one that wants a newer version'],
   ['limit.js', 'the free plan: one folder, paused folders, the limit dialog'],
