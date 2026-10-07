@@ -14,6 +14,12 @@ function planOf(account, now) {
   return Number(account.sub_period_end) + GRACE_MS > now ? 'pro' : 'free';
 }
 
+// The same test as planOf, for counting and filtering accounts in SQL: 1 or 0, never NULL. It
+// takes the clock as its one parameter.
+const PRO_SQL =
+  `COALESCE(stripe_subscription_id IS NOT NULL AND sub_status IN (${[...RUNNING].map((status) => `'${status}'`).join(', ')}) ` +
+  `AND sub_period_end + ${GRACE_MS} > ?, 0)`;
+
 // Folders at a time for a connection of this plan; null is no limit.
 const limitFor = (plan, config) => (plan === 'pro' || !config.enforceLimit ? null : config.freeLimit);
 
@@ -29,4 +35,4 @@ const subscriptionView = (account) =>
 
 const accountView = (account) => ({ name: account.name, email: account.email, avatar: account.avatar });
 
-module.exports = { GRACE_MS, isRunning, planOf, limitFor, subscriptionView, accountView };
+module.exports = { GRACE_MS, PRO_SQL, isRunning, planOf, limitFor, subscriptionView, accountView };

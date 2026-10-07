@@ -19,6 +19,7 @@ const crypto = require('node:crypto');
 const { fail, readBody, createLimiter } = require('./http');
 const { safeEqual } = require('./util');
 const { isRunning, planOf } = require('./plan');
+const { tally } = require('./stats');
 
 const ACCOUNT_ID_RE = /^[0-9a-f]{16}$/;
 const STRIPE_ID_RE = /^[\w-]{1,100}$/;
@@ -50,6 +51,9 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
   const accountById = (id) => (typeof id === 'string' && ACCOUNT_ID_RE.test(id) ? db.get('SELECT * FROM accounts WHERE id = ?', id) : undefined);
   const accountByCustomer = (customer) => (customer ? db.get('SELECT * FROM accounts WHERE stripe_customer_id = ? ORDER BY created_at LIMIT 1', customer) : undefined);
   const idOf = (value) => (typeof value === 'string' ? value : value && typeof value.id === 'string' ? value.id : null);
+  // One more Pro subscription for the day's anonymous totals (lib/stats.js), counted at the moment an
+  // account takes it. What was bought with a Stripe test card is kept apart.
+  const countSubscription = (object) => tally({ db, now, log }, 'subscription', object.livemode === false ? 'test' : 'live');
 
   async function stripe(method, path, form) {
     if (!stripeCfg.secretKey) throw new StripeError('Stripe is not configured.', 0, 'not_configured');
@@ -331,6 +335,8 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
       endsByItself(sub) ? 1 : 0,
       account.id,
     );
+    // news of it reached us before its checkout did
+    if (current !== sub.id && isRunning(sub.status)) countSubscription(sub);
     log(`[billing] subscription ${sub.id} is ${sub.status} for account ${account.id}`);
   }
 
@@ -430,6 +436,7 @@ function createBilling({ config, db, fetchFn, now, log, hooks }) {
         now(),
         account.id,
       );
+      countSubscription(session);
       log(`[billing] checkout completed for account ${account.id}`);
     }
     // Not being able to look yet is not a failure (the grant above stands, the subscription's own

@@ -18,6 +18,7 @@ const { createBuilds } = require('./builds');
 const { createMatch } = require('./match');
 const { createOperator } = require('./operator');
 const { createSite } = require('./site');
+const { Today, recordRequest } = require('./stats');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -108,8 +109,48 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
     { bearer: true },
   );
 
+  // The download button of the website. The file comes from GitHub; the click passes through here
+  // so that it can be counted (lib/stats.js).
+  router.add('GET', '/download', (ctx) => ctx.redirect(`${config.repoUrl}/releases/latest/download/FriendsShare.exe`));
+
   // for the operator, from inside the machine only (see handle)
   createOperator({ db, match, now, log, startedAt }).register(router);
+
+  // ---- for the admin interface (admin.js), which is a process of its own and sees only the database ----
+
+  const today = new Today();
+  const ownHost = new URL(config.baseUrl).hostname.replace(/^www\./, '');
+  let closing = null;
+
+  // Adds an answered request to the anonymous daily totals.
+  function count(req, res, pathname) {
+    if (closing) return;
+    try {
+      recordRequest(db, today, {
+        nowMs: now(),
+        method: req.method,
+        path: pathname,
+        status: res.statusCode,
+        address: clientAddress(req, config.trustProxy),
+        userAgent: String(req.headers['user-agent'] || ''),
+        referrer: req.headers.referer,
+        ownHost,
+      });
+    } catch (err) {
+      log(`[stats] could not count a request: ${err.message}`);
+    }
+  }
+
+  // Who is connected right now is known to the matchmaking alone, so its counts (no more than
+  // /internal/stats gives) are left in the database now and then.
+  function writeLive() {
+    try {
+      const live = JSON.stringify({ at: now(), started_at: startedAt, ...match.snapshot() });
+      db.run('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', 'live', live);
+    } catch (err) {
+      log(`[stats] the counts of right now could not be written: ${err.message}`);
+    }
+  }
 
   // Each kind of sign-in request is counted for itself, per address: a sign-in that is started,
   // one that comes back from the provider, a link from the app, and so on. What costs nothing to
@@ -158,6 +199,7 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
   async function handle(req, res) {
     securityHeaders(res);
     let pathname = '/';
+    res.once('finish', () => count(req, res, pathname));
     try {
       // origin-form only; "//host/path" would otherwise parse as a different host
       if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//')) fail(400, 'bad_request', 'That address is not valid.');
@@ -252,10 +294,12 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
     runCleanup();
     runBackup();
     builds.refreshLatest();
+    writeLive();
     timers.push(
       setInterval(runCleanup, config.tuning.cleanupIntervalMs),
       setInterval(runBackup, config.tuning.backupCheckMs),
       setInterval(() => builds.refreshLatest(), config.tuning.releaseRefreshMs),
+      setInterval(writeLive, config.tuning.liveIntervalMs),
     );
     for (const timer of timers) timer.unref();
     match.start();
@@ -272,7 +316,6 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
     });
   }
 
-  let closing = null;
   function close() {
     if (closing) return closing;
     for (const timer of timers) clearInterval(timer);
@@ -290,7 +333,7 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
     return closing;
   }
 
-  return { server, db, config, listen, close, runCleanup, runBackup, match, auth, builds, router };
+  return { server, db, config, listen, close, runCleanup, runBackup, writeLive, match, auth, builds, router };
 }
 
 module.exports = { createServer };

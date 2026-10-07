@@ -362,7 +362,7 @@ test('the database is created with the schema, foreign keys and WAL, and opened 
     assert.equal(db.get('PRAGMA foreign_keys').foreign_keys, 1);
     assert.equal(db.get('PRAGMA journal_mode').journal_mode, 'wal');
     const tables = db.all("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map((t) => t.name);
-    assert.deepEqual(tables, ['accounts', 'blocked_rooms', 'builds', 'codes', 'identities', 'meta', 'rooms', 'sessions']);
+    assert.deepEqual(tables, ['accounts', 'blocked_rooms', 'builds', 'codes', 'identities', 'meta', 'rooms', 'sessions', 'stats_daily']);
     db.run('INSERT INTO accounts (id, name, created_at) VALUES (?, ?, ?)', 'a1', 'Ada', 1);
     // rows are ordinary objects
     assert.deepEqual(db.get('SELECT id, name FROM accounts'), { id: 'a1', name: 'Ada' });
@@ -409,11 +409,11 @@ test('a database from the first release is upgraded to the current version and k
   assert.equal(old.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'blocked_rooms'").get().n, 0);
   old.close();
 
-  assert.equal(MIGRATIONS.length, 3);
+  assert.equal(MIGRATIONS.length, 4);
   const before = Date.now();
   const db = openDb(file);
   try {
-    assert.equal(db.get('PRAGMA user_version').user_version, 3);
+    assert.equal(db.get('PRAGMA user_version').user_version, 4);
     assert.deepEqual(db.get('SELECT id, name, email, checkout_session_id FROM accounts'), { id: 'a1', name: 'Ada', email: 'ada@example.com', checkout_session_id: null });
     const room = db.get('SELECT room, key_hash, exp, last_seen FROM rooms');
     assert.deepEqual({ ...room, last_seen: undefined }, { room: 'a'.repeat(64), key_hash: 'b'.repeat(64), exp: 5, last_seen: undefined });
@@ -421,6 +421,8 @@ test('a database from the first release is upgraded to the current version and k
     assert.ok(room.last_seen >= before - 2000 && room.last_seen <= Date.now() + 2000, `last_seen ${room.last_seen}`);
     assert.equal(db.get("SELECT value FROM meta WHERE key = 'latest_version'").value, '1.2.0');
     assert.equal(db.get('SELECT COUNT(*) AS n FROM blocked_rooms').n, 0);
+    // and the table of daily totals is there, empty
+    assert.equal(db.get('SELECT COUNT(*) AS n FROM stats_daily').n, 0);
     db.run('INSERT INTO blocked_rooms (room, created_at, note) VALUES (?, ?, ?)', 'c'.repeat(64), 7, 'after the upgrade');
   } finally {
     db.close();
@@ -428,7 +430,7 @@ test('a database from the first release is upgraded to the current version and k
   // opening it again changes nothing, and the new row is still there
   const again = openDb(file);
   try {
-    assert.equal(again.get('PRAGMA user_version').user_version, 3);
+    assert.equal(again.get('PRAGMA user_version').user_version, 4);
     assert.deepEqual(again.all('SELECT room, created_at, note FROM blocked_rooms'), [{ room: 'c'.repeat(64), created_at: 7, note: 'after the upgrade' }]);
   } finally {
     again.close();
@@ -449,7 +451,7 @@ test('a version 2 database (with blocked rooms) gets the room clock and the chec
 
   const db = openDb(file);
   try {
-    assert.equal(db.get('PRAGMA user_version').user_version, 3);
+    assert.equal(db.get('PRAGMA user_version').user_version, 4);
     assert.deepEqual(db.all('SELECT room, created_at, note FROM blocked_rooms'), [{ room: 'd'.repeat(64), created_at: 9, note: 'blocked before' }]);
     assert.deepEqual(db.get('SELECT stripe_customer_id, checkout_session_id FROM accounts'), { stripe_customer_id: 'cus_1', checkout_session_id: null });
     // the clock column has an index, which is what makes forgetting the oldest cheap

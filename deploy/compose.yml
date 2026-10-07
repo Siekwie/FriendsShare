@@ -19,6 +19,40 @@ services:
     # No published ports: only the proxy, on the same Docker network, can reach the app.
     networks: [web]
 
+  # The operator's admin interface (server/admin.js): accounts, subscriptions, what the server is
+  # doing, traffic. It has no login, so nobody else may reach it: it is not on the proxy's network,
+  # and its port is published on the server's loopback only. Open it from your PC through SSH
+  # (deploy/friendsshare-admin.cmd does both steps):
+  #   ssh -N -L 8792:127.0.0.1:8792 <ssh-host>        then  http://localhost:8792/
+  friendsshare-admin:
+    build: ./app/server
+    container_name: friendsshare-admin
+    restart: unless-stopped
+    command: ["node", "--disable-warning=ExperimentalWarning", "admin.js"]
+    env_file: .env
+    environment:
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 8792
+      DATA_DIR: /data
+    volumes:
+      # the same database as the server
+      - ./data:/data
+    # Never change this to "8792:8792": Docker publishes ports past ufw, to the whole internet.
+    ports:
+      - "127.0.0.1:8792:8792"
+    networks: [admin]
+    # the server creates the database, and brings an older one up to date, when it starts
+    depends_on:
+      friendsshare:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8792/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 networks:
   web:
     external: true
+  # Only the admin container is on this one; the proxy and the other sites cannot reach it.
+  admin:

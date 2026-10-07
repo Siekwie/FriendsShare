@@ -1,0 +1,613 @@
+/* FriendsShare admin interface. Loaded after the website's site.css and built on its colours,
+   buttons and cards. Served only by lib/admin-web.js, never by the public site. */
+
+:root {
+  --ok: #1a7f4b;
+  --ok-soft: rgba(26, 127, 75, 0.11);
+  --warn: #8a5200;
+  --warn-soft: rgba(176, 108, 0, 0.13);
+  --danger-soft: rgba(179, 38, 30, 0.09);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ok: #6fdc9f;
+    --ok-soft: rgba(111, 220, 159, 0.13);
+    --warn: #f0b354;
+    --warn-soft: rgba(240, 179, 84, 0.14);
+    --danger-soft: rgba(255, 138, 128, 0.14);
+  }
+}
+
+body.admin {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.admin h1 {
+  margin-bottom: 20px;
+  font: 700 28px/1.2 var(--font-serif);
+  letter-spacing: -0.015em;
+}
+
+.admin h1 q {
+  quotes: '“' '”';
+  font-weight: 600;
+}
+
+.admin h2 {
+  margin-bottom: 8px;
+  font: 700 18px/1.3 var(--font-serif);
+}
+
+.admin h2 .muted {
+  font: 400 14px/1.3 var(--font-sans);
+}
+
+.admin code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.wrap-any {
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+.icon-inline {
+  display: inline;
+  vertical-align: -0.12em;
+}
+
+/* ------------------------------------------------------------- header */
+
+.test-banner {
+  padding: 8px 20px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 600;
+  text-align: center;
+}
+
+.admin-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 22px;
+  width: 100%;
+  max-width: 1120px;
+  min-height: 60px;
+  margin: 0 auto;
+  padding: 8px 20px;
+}
+
+.admin-tag {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--link);
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.admin-nav a {
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.admin-nav a:hover,
+.admin-nav a[aria-current] {
+  background: var(--brand-soft);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.admin-search {
+  display: flex;
+  flex: 0 1 360px;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.admin-search input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--control);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.admin-search input::placeholder {
+  color: var(--ink-3);
+}
+
+.admin-main {
+  padding-top: 28px;
+  padding-bottom: 64px;
+}
+
+.admin-main > section {
+  margin-bottom: 28px;
+}
+
+/* ------------------------------------------------------------- cards and tiles */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.tile-label {
+  display: block;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tile-value {
+  display: block;
+  font: 700 32px/1.2 var(--font-serif);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-sub {
+  display: block;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 28px;
+}
+
+.admin .card p {
+  max-width: none;
+}
+
+.section-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+
+.admin .section-row h2 {
+  margin: 0;
+}
+
+.section-row > a {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.empty {
+  padding: 28px 22px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink-3);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- lists of facts */
+
+.setup,
+.details {
+  display: grid;
+  gap: 8px;
+}
+
+.setup-row,
+.details > div {
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.details-wide > div {
+  grid-template-columns: 136px minmax(0, 1fr);
+}
+
+.details-more {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.setup dt,
+.details dt {
+  color: var(--ink-3);
+  font-size: 14px;
+}
+
+.setup dd {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.state {
+  display: inline-flex;
+  flex: none;
+  margin-top: 0.22em;
+}
+
+.state-ok {
+  color: var(--ok);
+}
+
+.state-todo {
+  color: var(--warn);
+}
+
+/* ------------------------------------------------------------- tables */
+
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.admin-table th {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.admin-table .num,
+.count-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row-link {
+  font-weight: 600;
+}
+
+.table-wrap + .muted {
+  margin-top: 10px;
+}
+
+/* ------------------------------------------------------------- pills, tabs, flash */
+
+.pill {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pill-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.pill-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.pill-plain {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.tabs a {
+  padding: 4px 14px;
+  border-radius: 7px;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.tabs a:hover {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.tabs a[aria-current] {
+  background: var(--brand-soft);
+  color: var(--link);
+}
+
+.pager {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.flash {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--ok-soft);
+  font-weight: 500;
+}
+
+.flash .icon {
+  margin-top: 0.22em;
+  color: var(--ok);
+}
+
+.flash-error {
+  background: var(--danger-soft);
+}
+
+.flash-error .icon {
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------- one account */
+
+.crumbs {
+  margin-bottom: 6px;
+  color: var(--ink-3);
+  font-size: 14px;
+}
+
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 20px;
+}
+
+.admin .title-row h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-foot {
+  max-width: 78ch;
+}
+
+.lede-admin {
+  max-width: 60ch;
+  margin-bottom: 20px;
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------- traffic */
+
+.page-note {
+  max-width: 82ch;
+  font-size: 14.5px;
+}
+
+.admin .tiles-title {
+  margin-top: 22px;
+  margin-bottom: 10px;
+}
+
+.tiles-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.tiles-6 .tile {
+  padding: 14px 16px;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-bar {
+  fill: var(--brand);
+}
+
+.chart-hit {
+  fill: transparent;
+}
+
+.chart-col {
+  outline: none;
+}
+
+.chart-col:hover .chart-hit,
+.chart-col:focus-visible .chart-hit {
+  fill: var(--brand-soft);
+}
+
+.chart-col:hover .chart-bar,
+.chart-col:focus-visible .chart-bar {
+  fill: var(--brand-hover);
+}
+
+.chart-grid,
+.chart-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-axis {
+  stroke: var(--line-strong);
+}
+
+.chart-tick,
+.chart-value {
+  fill: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-value {
+  fill: var(--ink);
+  font-weight: 700;
+}
+
+.chart-tip {
+  position: fixed;
+  z-index: 100;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.chart-tip strong {
+  display: block;
+  font-size: 14px;
+}
+
+.count-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+}
+
+.count-table th,
+.count-table td {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.count-table th {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.count-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.count-table .num {
+  padding-left: 16px;
+}
+
+.daily summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.daily .table-wrap {
+  margin-top: 14px;
+}
+
+/* ------------------------------------------------------------- small screens */
+
+@media (max-width: 1100px) {
+  .tiles-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .tiles,
+  .tiles-6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .admin-search {
+    flex-basis: 100%;
+  }
+  .setup-row,
+  .details > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}

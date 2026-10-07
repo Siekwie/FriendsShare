@@ -11,9 +11,9 @@
 
 <main id="main" class="legal" tabindex="-1">
   <h1>Privacy</h1>
-  <p class="muted">Last updated: 5 October 2026</p>
+  <p class="muted">Last updated: 7 October 2026</p>
 
-  <p>This page says what FriendsShare at {{site_url}} and the FriendsShare app store about you, why, and for how long. The short version: no advertising, no tracking, no cookies just for visiting, and your files never reach our server. What the server does keep is small, and it is deleted when it is no longer needed.</p>
+  <p>This page says what FriendsShare at {{site_url}} and the FriendsShare app store about you, why, and for how long. The short version: no advertising, no tracking, no cookies just for visiting, and your files never reach our server. Visits are only counted, as totals per day. What the server does keep is small, and it is deleted when it is no longer needed.</p>
 
   <h2>Who is responsible</h2>
   <address>{{operator_name}}<br>{{{operator_address}}}</address>
@@ -23,12 +23,13 @@
   <ul>
     <li>Your browser sends its IP address with every request. The FriendsShare server uses it to answer the request and keeps no access log.</li>
     <li>No cookie is set. If you switch between the light and dark theme, your browser remembers that choice in its local storage. It is never sent anywhere.</li>
-    <li>There is no tracking and no analytics, and the pages load no fonts, scripts or images from other companies.</li>
+    <li>The server counts how much this site is used, as totals per day and nothing else: pages viewed, visitors, clicks on the download button, checkouts started and subscriptions bought, the name of the website a visitor came from (for example <code>github.com</code>) and the kind of operating system. To count a visitor only once a day, it keeps a hash of the IP address and the browser's name in memory until midnight (UTC). The hash is mixed with a random value that changes every day, it is never written to disk, and the totals cannot be traced back to anybody. Search engines and other crawlers are not counted.</li>
+    <li>There is no tracking from one website to another, no profile of you and no analytics service, and the pages load no fonts, scripts or images from other companies.</li>
   </ul>
   <p>Legal basis: Art. 6 (1) (f) GDPR, our interest in running the site securely.</p>
 
   <h2>Downloading and updating the app</h2>
-  <p>The app file comes from GitHub (github.com, GitHub Inc.). The download button on this site is a link to GitHub, so GitHub receives your IP address and the usual request data when you download the app. The app also asks GitHub's API for the newest version and downloads its updates from there, and GitHub sees your IP address then as well. GitHub's own privacy statement applies to this.</p>
+  <p>The app file comes from GitHub (github.com, GitHub Inc.). The download button on this site leads to GitHub: this server counts the click, as described above, and sends your browser on. GitHub therefore receives your IP address and the usual request data when you download the app. The app also asks GitHub's API for the newest version and downloads its updates from there, and GitHub sees your IP address then as well. GitHub's own privacy statement applies to this.</p>
 
   <h2>Using the app without an account</h2>
   <p>The free plan needs no account. The app connects to the FriendsShare matchmaking server so that two apps can find each other. While it is connected, the server processes, in passing:</p>

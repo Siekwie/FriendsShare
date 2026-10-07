@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Deploys the server (website, accounts, matchmaking) from the committed HEAD: uploads the source,
-# rebuilds the image, restarts the container and waits until it reports healthy. Uncommitted
-# changes are not deployed.
+# Deploys the server (website, accounts, matchmaking) and its admin interface from the committed
+# HEAD: uploads the source, rebuilds the image, restarts the two containers and waits until both
+# report healthy. Uncommitted changes are not deployed.
 #
 #   deploy/deploy.sh <ssh-host>      (or set DEPLOY_HOST; run from Git Bash on Windows)
 #
@@ -34,10 +34,14 @@ ssh "$HOST" "set -e
     cp app/deploy/friendsshare.caddy $SITES/friendsshare.caddy
     docker exec caddy caddy reload --config /etc/caddy/Caddyfile
   fi
-  for i in \$(seq 1 30); do
-    [ \"\$(docker inspect -f '{{.State.Health.Status}}' friendsshare 2>/dev/null)\" = healthy ] && { echo 'friendsshare is healthy'; exit 0; }
+  healthy() { [ \"\$(docker inspect -f '{{.State.Health.Status}}' \$1 2>/dev/null)\" = healthy ]; }
+  for i in \$(seq 1 45); do
+    healthy friendsshare && healthy friendsshare-admin && { echo 'friendsshare and friendsshare-admin are healthy'; exit 0; }
     sleep 2
   done
-  echo 'friendsshare did not become healthy:' >&2
-  docker logs --tail 40 friendsshare >&2
+  for c in friendsshare friendsshare-admin; do
+    healthy \$c && continue
+    echo \"\$c did not become healthy:\" >&2
+    docker logs --tail 40 \$c >&2
+  done
   exit 1"

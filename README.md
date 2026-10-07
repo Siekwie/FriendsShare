@@ -81,7 +81,8 @@ icons from the real app and `assets/`.
 ## Running the server
 
 `server/` is one Node process without a build step: the website (`server/site/`), sign-in,
-Stripe billing and the matchmaking WebSocket. It needs Node 22 and a writable `DATA_DIR`
+Stripe billing and the matchmaking WebSocket (plus a second, optional one for the operator, see
+[Admin interface](#admin-interface)). It needs Node 22 and a writable `DATA_DIR`
 (SQLite database, daily snapshots in `DATA_DIR/backups`). Everything is switched on by
 environment variables, listed in [deploy/env.example](deploy/env.example): without the Stripe
 variables there is no Pro plan and no folder limit, without the sign-in variables no accounts,
@@ -96,10 +97,45 @@ node deploy/setup-login.js github <ssh-host>       # "Sign in with GitHub": one 
 node deploy/setup-login.js google <ssh-host>       # "Sign in with Google": guided, a few minutes
 deploy/ops.sh <ssh-host> stats                     # who is connected, accounts, rooms
 deploy/ops.sh <ssh-host> block <share code>        # after an abuse report; also unblock, blocked, logs
+deploy\friendsshare-admin.cmd <ssh-host>           # the admin interface, in the browser (Windows)
 ```
 
 The server cannot see what people share, so blocking a reported code (its fingerprint) is all an
 operator can do, and all the terms promise.
+
+### Admin interface
+
+Accounts, subscriptions, what the server is doing and how much the website is used, as web pages
+for whoever runs the server. `deploy/friendsshare-admin.cmd` opens it; anywhere else:
+
+```bash
+ssh -N -L 8792:127.0.0.1:8792 <ssh-host>      # leave it running, then open http://localhost:8792/
+```
+
+| Page | What it shows |
+| --- | --- |
+| Overview | totals; who is connected right now (the server leaves its counts in the database every minute); what is set up and what is missing; the newest accounts; blocked share codes |
+| Accounts | newest first; the search box takes part of a name or an email address, an account ID, or a Stripe customer or subscription ID |
+| One account | plan and subscription (with links to the Stripe dashboard), sign-in methods, where it is signed in |
+| Traffic | visitors, page views, downloads, new accounts, started checkouts and Pro subscriptions per day, the way from a visit to Pro, pages, the sites visitors came from, their systems |
+
+It only shows things. A share code is blocked with `deploy/ops.sh`, a subscription is changed in
+Stripe, and an account is deleted by its owner.
+
+The traffic numbers are counted by the site itself (`server/lib/stats.js`): totals per day in the
+table `stats_daily`, nothing about a single visitor. To count a visitor once per day the server
+keeps a salted hash of address and browser in memory until midnight; it never reaches the disk.
+Crawlers are left out as far as their user agent says what they are. The download button goes
+through `/download` so that the click can be counted. The privacy page describes all of this; keep
+it in step when you change what is counted.
+
+**It has no login, on purpose: the SSH key is the login.** It is a process of its own
+(`server/admin.js`, the `friendsshare-admin` container) that reads the same database. The container
+is not on the proxy's network, and its port is published on the server's loopback only
+(`127.0.0.1:8792`), so it can only be reached from the server itself, which is what the tunnel
+does. On top of that it only answers requests addressed to `localhost`. Keep it that way: never
+change the port line in `deploy/compose.yml` to `"8792:8792"` (Docker publishes ports past a
+firewall), and never add it to a Caddy site. Locally: `npm --prefix server run admin`.
 
 ## License
 

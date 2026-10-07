@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
+    "admin": "node --disable-warning=ExperimentalWarning admin.js",
     "test": "node --disable-warning=ExperimentalWarning --test --test-timeout=120000 --test-force-exit \"test/*.test.js\""
   },
   "dependencies": {

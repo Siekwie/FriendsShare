@@ -1,6 +1,7 @@
 // SQLite through node:sqlite. One file in DATA_DIR holds accounts, sessions, rooms (and the ones
-// the operator blocked) and the cache of official builds. Parameters are always bound, never
-// spliced into the SQL text.
+// the operator blocked), the cache of official builds and the anonymous daily totals. Parameters
+// are always bound, never spliced into the SQL text. The server and the admin interface (admin.js)
+// open the same file; WAL mode plus a busy timeout lets them do so without stepping on each other.
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
@@ -107,6 +108,17 @@ const MIGRATIONS = [
   -- The Checkout Session an account opened last. There is at most one open at a time: opening a
   -- new one first expires this one.
   ALTER TABLE accounts ADD COLUMN checkout_session_id TEXT;
+  `,
+  `
+  -- Anonymous totals per day (lib/stats.js), for the operator's admin interface: how often
+  -- something happened, never who did it.
+  CREATE TABLE stats_daily (
+    day TEXT NOT NULL,                   -- YYYY-MM-DD, UTC
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, kind, name)
+  ) WITHOUT ROWID;
   `,
 ];
 

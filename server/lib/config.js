@@ -39,6 +39,8 @@ function loadConfig(env = process.env) {
     portalConfig: str('STRIPE_PORTAL_CONFIG'),
     managedPayments: flag('STRIPE_MANAGED_PAYMENTS'),
   };
+  // a test key: what is bought with it is real here and paid for by nobody
+  stripe.testMode = Boolean(stripe.secretKey) && /^(sk|rk)_test_/.test(stripe.secretKey);
   const needed = { STRIPE_SECRET_KEY: stripe.secretKey, STRIPE_WEBHOOK_SECRET: stripe.webhookSecret, STRIPE_PRICE_MONTHLY: stripe.priceMonthly, STRIPE_PRICE_YEARLY: stripe.priceYearly };
   stripe.missing = Object.keys(needed).filter((name) => !needed[name]);
   stripe.complete = stripe.missing.length === 0;
@@ -95,6 +97,10 @@ function loadConfig(env = process.env) {
     trustProxy: flag('TRUST_PROXY'),
     // null: createServer reads or creates DATA_DIR/secret.key
     appSecret: str('APP_SECRET'),
+    // The operator's admin interface (admin.js): a listener of its own, with no login, that is
+    // never put behind the proxy. On the machine itself unless told otherwise.
+    admin: { host: str('ADMIN_HOST') || '127.0.0.1', port: Math.floor(num('ADMIN_PORT', 8792, 0)) },
+    adminSiteDir: path.resolve(__dirname, '..', 'admin-site'),
 
     github,
     google,
@@ -163,6 +169,8 @@ function loadConfig(env = process.env) {
       cleanupIntervalMs: 3_600_000,
       backupCheckMs: 3_600_000,
       releaseRefreshMs: 3_600_000,
+      // how often the counts of "right now" are left in the database for the admin interface
+      liveIntervalMs: 60_000,
       planCheckMs: 60_000,
       buildMissMs: 60_000,
       fetchTimeoutMs: 15_000,
