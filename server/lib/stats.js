@@ -70,9 +70,11 @@ class Today {
   }
 }
 
-// Crawlers, link previews, monitors and scripts: they are not people looking at the page.
+// Crawlers, link previews, monitors and scripts: they are not people looking at the page. Every
+// browser's name starts with "Mozilla/", so anything else is a program, whatever it calls itself
+// (the status monitor of wiest-lab.eu loads every site's start page twice a minute, for one).
 function isBot(userAgent) {
-  return !userAgent || /bot|crawl|spider|slurp|preview|monitor|uptime|pingdom|lighthouse|headless|scan|curl|wget|python|go-http|java\/|okhttp|axios|node|fetch|httpclient|libwww|facebookexternalhit|whatsapp|telegram|embedly/i.test(userAgent);
+  return !userAgent.startsWith('Mozilla/') || /bot|crawl|spider|slurp|preview|monitor|uptime|pingdom|lighthouse|headless|scan|curl|wget|python|go-http|java\/|okhttp|axios|node|fetch|httpclient|libwww|facebookexternalhit|whatsapp|telegram|embedly/i.test(userAgent);
 }
 
 function systemOf(userAgent) {

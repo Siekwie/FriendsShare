@@ -479,6 +479,10 @@ test('the traffic page shows the totals, the charts and every day as numbers', (
     assert.match(page, /aria-label="1,240 visitors in the last 30 days, the most on Oct 8 \(1,234\)"/);
     assert.match(page, /data-tip="1,234 visitors" data-tip-sub="Today, Thu, Oct 8, 2026"/);
     assert.match(page, /aria-label="4 downloads in the last 30 days, the most on Oct 6 \(4\)"/);
+    // the axis ends just above the highest day, and the headings add the days up
+    assert.match(page, /<text class="chart-tick"[^>]*>1,600<\/text>/);
+    assert.match(page, /Visitors per day <span class="muted">1,240 in 30 days<\/span>/);
+    assert.match(page, /Downloads per day <span class="muted">4 in 30 days<\/span>/);
     // the way from a visit to Pro, as a share of the visitors
     assert.match(page, /<td>Clicked the download<\/td><td class="num">4<\/td><td class="num muted">0\.3%<\/td>/);
     assert.match(page, /<td>Bought Pro<\/td><td class="num">1<\/td><td class="num muted">0\.1%<\/td>/);

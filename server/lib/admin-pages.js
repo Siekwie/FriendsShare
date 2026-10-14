@@ -446,10 +446,11 @@ const shortDay = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric',
 const longDay = new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 const asDate = (day) => new Date(`${day}T00:00:00Z`);
 
-// The axis ends on a round number whose half is round too: 4, 10, 20, 40, 50, 100...
+// The axis ends on the first round number at or above the highest day, one whose half is round
+// too (4, 6, 8, 10, 12, 16, 20, 24, 30, 40...), so that the columns fill most of the height.
 function axisMax(max) {
   for (let scale = 1; ; scale *= 10) {
-    for (const step of [4, 10, 20, 40, 50]) if (max <= step * scale) return step * scale;
+    for (const step of [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80]) if (max <= step * scale) return step * scale;
   }
 }
 
@@ -548,7 +549,7 @@ function trafficPage(site, data) {
 
   const body = html`
 <h1>Traffic</h1>
-<p class="muted page-note">Anonymous totals per day (UTC), counted by the site itself: no cookies, nothing stored about a visitor. Crawlers are left out as far as they say who they are. A visitor is counted once per day, so over several days the number means visits. New accounts are those that still exist.</p>
+<p class="muted page-note">Anonymous totals per day (UTC), counted by the site itself: no cookies, nothing stored about a visitor. Only browsers count: monitors and scripts are left out, and crawlers as far as they say who they are. A visitor is counted once per day, so over several days the number means visits. New accounts are those that still exist.</p>
 
 <h2 class="tiles-title">Last ${r.days.length} days</h2>
 <ul class="tiles tiles-6">
@@ -562,11 +563,11 @@ function trafficPage(site, data) {
 
 <div class="admin-grid">
   <section class="card" aria-labelledby="chart-visitors">
-    <h2 id="chart-visitors">Visitors per day</h2>
+    <h2 id="chart-visitors">Visitors per day <span class="muted">${number(r.month.visitors)} in ${r.days.length} days</span></h2>
     ${columnChart(r.days, 'visitors', ['visitor', 'visitors'])}
   </section>
   <section class="card" aria-labelledby="chart-downloads">
-    <h2 id="chart-downloads">Downloads per day</h2>
+    <h2 id="chart-downloads">Downloads per day <span class="muted">${number(r.month.downloads)} in ${r.days.length} days</span></h2>
     ${columnChart(r.days, 'downloads', ['download', 'downloads'])}
   </section>
 </div>

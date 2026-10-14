@@ -38,7 +38,7 @@ const hit = (over = {}) => ({ nowMs: START, method: 'GET', path: '/', status: 20
 // ---- the pieces ----
 
 test('crawlers, previews and scripts are told apart from people, and a system is read from the browser', () => {
-  for (const ua of ['', GOOGLEBOT, 'curl/8.5.0', 'Wget/1.21', 'node', 'python-requests/2.32', 'facebookexternalhit/1.1', 'Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/140.0', 'UptimeRobot/2.0']) {
+  for (const ua of ['', GOOGLEBOT, 'curl/8.5.0', 'Wget/1.21', 'node', 'python-requests/2.32', 'facebookexternalhit/1.1', 'Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/140.0', 'UptimeRobot/2.0', 'wiestlab-status/1 (+https://status.wiest-lab.eu)', 'Go-http-client/2.0', 'Dalvik/2.1.0 (Linux; U; Android 14)']) {
     assert.equal(isBot(ua), true, ua);
   }
   for (const ua of [FIREFOX, SAFARI]) assert.equal(isBot(ua), false, ua);
