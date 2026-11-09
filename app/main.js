@@ -123,6 +123,11 @@ function loadConfig() {
   const saved = config.settings && typeof config.settings === 'object' ? config.settings : {};
   config.settings = { tray: saved.tray !== false, autostart: saved.autostart === true };
   if (typeof saved.baseDir === 'string' && path.isAbsolute(saved.baseDir)) config.settings.baseDir = saved.baseDir;
+  // the files and folders a shared folder holds from elsewhere (see folder.js): only what is well-formed
+  for (const share of config.shares) {
+    if (!share || share.role !== 'host' || !Array.isArray(share.links)) continue;
+    share.links = share.links.filter((l) => l && typeof l.name === 'string' && !tree.unsafeName(l.name) && typeof l.src === 'string' && path.isAbsolute(l.src));
+  }
 
   // The lists of the owners' files used to live in config.json, which is rewritten on every change.
   // They have a place of their own now; the old ones move there, and out of config.json, when their
@@ -182,6 +187,14 @@ function resolveIn(dir, rel) {
 }
 
 const PART_SUFFIX = tree.PART_SUFFIX;
+
+// the places that must not be shared, for folder.unsafeToShare and folder.unsafeToLink
+const places = () => ({
+  home: app.getPath('home'),
+  windir: process.env.SystemRoot || process.env.windir,
+  userData: app.getPath('userData'),
+  baseDir: getBaseDir(),
+});
 
 // What went wrong on the friend's disk, as an error the window can act on (see TaggedError): "disk"
 // ends the whole sync, "local" costs only the file at hand. Errors that are not about the disk
@@ -365,12 +378,7 @@ const api = {
     if (!st || !st.isDirectory()) throw new Error('That is not a folder');
     if (config.shares.some((s) => s.dir && samePath(s.dir, dir))) throw new Error('That folder is already in your list');
     // folders that would show far more than anybody means to share
-    const why = folder.unsafeToShare(dir, {
-      home: app.getPath('home'),
-      windir: process.env.SystemRoot || process.env.windir,
-      userData: app.getPath('userData'),
-      baseDir: getBaseDir(),
-    });
+    const why = folder.unsafeToShare(dir, places());
     if (why) throw new Error(why);
     // A huge folder is probably not what the person meant, and listing it takes a while.
     if ((await folder.countFiles(dir, folder.MANY_FILES)) > folder.MANY_FILES) {
@@ -459,10 +467,14 @@ const api = {
     if (share.dir && (await shell.openPath(share.dir))) throw new Error('Could not open the folder. Was it moved or deleted?');
   },
 
-  // The files in a folder -> { files: [{ path, size, mtime }], missing: null | 'missing' | 'denied' }.
+  // The files in a folder, those it holds from elsewhere included (see folder.listShare)
+  // -> { files: [{ path, size, mtime }], missing: null | 'missing' | 'denied', links }.
   // `missing` says the folder itself cannot be read, which is not the same as an empty folder. A
   // listing is reused for a few seconds; opts.fresh asks for a new one.
-  'share:files': (id, opts) => lister.list(id, getShare(id).dir, { fresh: !!(opts && opts.fresh) }),
+  'share:files': (id, opts) => {
+    const share = getShare(id);
+    return lister.list(id, share.dir, { fresh: !!(opts && opts.fresh), links: share.links || [] });
+  },
 
   'share:pick': async (id) => {
     const res = await dialog.showOpenDialog(win, { title: 'Add files', properties: ['openFile', 'multiSelections'] });
@@ -470,31 +482,71 @@ const api = {
     return api['share:import'](id, res.filePaths);
   },
 
-  // Copies files or whole folders into the share.
+  // Adds files or whole folders to the share from where they are (see folder.js, links). Nothing is
+  // copied or moved, so adding a recording of many gigabytes takes no time and no disk space. What
+  // is in the shared folder already needs nothing. The paths come from the system's file picker or
+  // from a drop on the window, both of which the person did. -> how many were added; what could not
+  // be added is an error that names each one, thrown after the rest was added.
   'share:import': async (id, paths) => {
     const share = getShare(id);
     if (share.role !== 'host') throw new Error('You can only add files to your own folders');
+    if (!Array.isArray(paths)) throw new Error('Bad paths');
+    const links = share.links || (share.links = []);
+    // the names in use at the top of the folder: what is in it, and the links so far
+    const taken = new Set(links.map((l) => l.name.toLowerCase()));
+    for (const name of await fsp.readdir(share.dir).catch(() => [])) taken.add(name.toLowerCase());
+    const problems = [];
     let count = 0;
-    try {
-      for (const src of paths) {
-        const dest = path.join(share.dir, path.basename(src));
-        if (path.resolve(src) === dest) continue;
-        await fsp.cp(src, dest, { recursive: true, force: true });
-        count++;
+    for (const raw of paths) {
+      if (typeof raw !== 'string' || !path.isAbsolute(raw)) continue;
+      const src = path.resolve(raw);
+      const label = path.basename(src) || src;
+      const st = await fsp.stat(src).catch(() => null);
+      if (!st || !(st.isFile() || st.isDirectory())) {
+        problems.push(`${label}: it cannot be found`);
+        continue;
       }
-    } finally {
+      // already there, as a file in the folder or as a link
+      if (folder.within(share.dir, src) || links.some((l) => samePath(l.src, src))) continue;
+      const why = folder.unsafeToLink(src, st.isDirectory(), share.dir, places());
+      const bad = why ? null : tree.unsafeName(label);
+      if (why || bad) {
+        problems.push(`${label}: ${why || `it cannot be shared because ${bad}`}`);
+        continue;
+      }
+      const name = folder.freeName(label, st.isDirectory(), taken);
+      taken.add(name.toLowerCase());
+      links.push({ name, src });
+      count++;
+    }
+    if (count) {
+      saveConfig();
       lister.invalidate(id);
     }
+    if (problems.length) throw new Error(problems.join('\n'));
     return count;
   },
 
-  // A friend asked for this file. It has to be a real file inside the shared folder; resolveIn
-  // only looks at the text of the path, folder.realFile at where it leads. The errors are tagged
-  // (see TaggedError): "gone" is the folder itself, "read" is only this file.
+  // Takes a file or folder that was added from elsewhere out of the share again. It stays where it
+  // is; nothing is deleted. -> the share
+  'share:unlink': (id, name) => {
+    const share = getShare(id);
+    if (share.role !== 'host') throw new Error('Not shared');
+    if (!Array.isArray(share.links) || !share.links.some((l) => l.name === name)) return share;
+    share.links = share.links.filter((l) => l.name !== name);
+    saveConfig();
+    lister.invalidate(id);
+    return share;
+  },
+
+  // A friend asked for this file. It has to be a real file inside the shared folder, or one of the
+  // files the folder holds from elsewhere; folder.realFile looks at where the path leads, not only
+  // at its text. The errors are tagged (see TaggedError): "gone" is the folder itself, "read" is
+  // only this file.
   'file:openRead': async (id, rel) => {
     const share = getShare(id);
     if (share.role !== 'host') throw new Error('Not shared');
-    const real = await folder.realFile(share.dir, rel);
+    const real = await folder.realFile(share.dir, rel, share.links || []);
     let fh;
     try {
       fh = await fsp.open(real, 'r');

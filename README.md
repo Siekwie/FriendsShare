@@ -6,7 +6,8 @@ is uploaded anywhere: files go directly from your PC to theirs.
 **[friendsshare.wiest-lab.eu](https://friendsshare.wiest-lab.eu)** ·
 **[Download for Windows](https://github.com/Siekwie/FriendsShare/releases/latest/download/FriendsShare.exe)**
 
-1. Create a folder in the app (or pick one you already have) and put files into it.
+1. Create a folder in the app and drop the files you want to share onto the window, or pick a
+   folder you already have. Nothing is copied: files are shared from where they are.
 2. Click **Generate code** and send the code to a friend.
 3. The friend clicks **Add code**, pastes it, picks what they want and downloads it.
 
@@ -26,6 +27,13 @@ beyond the first five are paused, not removed.
 
 - **Share code**: a random UUID. Whoever has it can download the folder until the code expires
   (365 days unless you pick something shorter). **New code** replaces it and locks out the old one.
+- **Files from elsewhere**: a file or folder dropped onto the window (or picked with **Add files**)
+  is not copied into the shared folder. The app remembers where it is and lists and serves it from
+  there, under its name at the top of the folder (`clip (2).mp4` if the name is taken). Friends only
+  ever see the name. **Remove** on its row takes it out of the folder again; the original is never
+  touched. A file that is moved or deleted disappears from the folder, and the app says so. A whole
+  folder added this way is held to the same rules as a folder shared in place (nothing of Windows,
+  not the user folder).
 - **Matchmaking server** (`server/`): introduces the two apps to each other so they can open a
   direct WebRTC connection. It only ever sees the SHA-256 of a code and the connection handshake,
   never the code, file names or file data.

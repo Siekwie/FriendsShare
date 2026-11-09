@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('api', {
   getRemote: call('share:remote'),
   pickFiles: call('share:pick'),
   importPaths: call('share:import'),
+  // a file or folder added from elsewhere is taken out of the folder again (it stays where it is)
+  unlink: call('share:unlink'),
   openRead: call('file:openRead'),
   read: call('file:read'),
   openWrite: call('file:openWrite'),

@@ -509,6 +509,23 @@ progress::-webkit-progress-value {
 .node.dir .name {
   font-weight: 600;
 }
+/* a file or folder the owner added from elsewhere: a marker, and a Remove that shows on the row */
+.node .tag {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.node .unlink {
+  flex: none;
+  visibility: hidden;
+}
+.node:hover .unlink,
+.node:focus-within .unlink {
+  visibility: visible;
+}
 .node .done {
   flex: none;
   min-width: 96px;

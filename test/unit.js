@@ -473,6 +473,72 @@ await t.scenario('Listing, counting, links, and what may be shared', async () =>
   t.check(fs.existsSync(path.join(outside, 'secret.txt')), 'removing the junction left what it pointed to alone');
 });
 
+await t.scenario('Files and folders shared from elsewhere: listed as if in the folder, served from where they are', async () => {
+  const base = t.resetDir(path.join(t.tmpRoot, 'unit-links'));
+  const share = path.join(base, 'share');
+  const videos = path.join(base, 'Videos');
+  const put = (file, text = 'x') => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+  put(path.join(share, 'a.txt'), 'aaa');
+  put(path.join(share, 'clip.mp4'), 'the one in the folder');
+  put(path.join(videos, 'big.mp4'), 'twelve bytes');
+  put(path.join(videos, 'Clips', 'one.mp4'), 'one');
+  put(path.join(videos, 'Clips', 'more', 'two.mp4'), 'two');
+  put(path.join(videos, 'Clips', 'part.1-2.fspart'), 'half');
+  put(path.join(base, 'secret', 'secret.txt'), 'secret');
+  fs.symlinkSync(path.join(base, 'secret'), path.join(videos, 'Clips', 'jump'), 'junction');
+  const links = [
+    { name: 'big.mp4', src: path.join(videos, 'big.mp4') },
+    { name: 'Clips', src: path.join(videos, 'Clips') },
+    { name: 'gone.mp4', src: path.join(videos, 'gone.mp4') },
+    { name: 'CLIP.mp4', src: path.join(videos, 'Clips', 'one.mp4') },
+  ];
+
+  const listed = await folder.listShare(share, links);
+  t.check(same(listed.files.map((f) => f.path), ['CLIP.mp4', 'Clips/more/two.mp4', 'Clips/one.mp4', 'a.txt', 'big.mp4']), `a linked file is listed under its name, a linked folder with everything in it (junctions and unfinished downloads skipped), and a link wins over a file of the same name in the folder, whatever the case (${listed.files.map((f) => f.path)})`);
+  t.check(listed.files.find((f) => f.path === 'big.mp4').size === 12 && listed.files.find((f) => f.path === 'CLIP.mp4').size === 3, 'with the size of the file it stands for');
+  t.check(listed.missing === null && same(listed.links.map((l) => [l.name, l.dir, l.problem]), [['big.mp4', false, null], ['Clips', true, null], ['gone.mp4', false, 'missing'], ['CLIP.mp4', false, null]]), 'and the links are reported, with the one that leads nowhere marked');
+  t.check(same(await folder.listShare(share, []), { ...(await folder.listFiles(share)), links: [] }), 'without links it is the plain listing');
+  const noDir = await folder.listShare(path.join(base, 'nowhere'), links);
+  t.check(noDir.missing === 'missing' && noDir.files.length === 4, 'a folder that is gone still lists what is shared from elsewhere, and says that the folder itself is missing');
+
+  // the listing with a memory tells links apart
+  const lister = folder.createLister(150);
+  const first = lister.list('k', share, { links });
+  t.check(first === lister.list('k', share, { links: [...links] }) && first !== lister.list('k', share, { links: links.slice(0, 1) }), 'the same links reuse a listing, other links start over');
+
+  // serving
+  const real = (rel) => folder.realFile(share, rel, links).then((p) => p.toLowerCase(), (err) => err);
+  const low = (...parts) => fs.realpathSync(path.join(...parts)).toLowerCase();
+  t.check((await real('big.mp4')) === low(videos, 'big.mp4') && (await real('BIG.MP4')) === low(videos, 'big.mp4'), 'a linked file is served from where it is');
+  t.check((await real('Clips/one.mp4')) === low(videos, 'Clips', 'one.mp4') && (await real('Clips/more/two.mp4')) === low(videos, 'Clips', 'more', 'two.mp4'), 'and so is a file in a linked folder');
+  t.check((await real('a.txt')) === low(share, 'a.txt'), 'a file in the folder itself still is');
+  t.check((await real('CLIP.mp4')) === low(videos, 'Clips', 'one.mp4') && (await real('clip.mp4')) === low(videos, 'Clips', 'one.mp4'), 'where a link and a file in the folder have the same name, the link is what is served, as it is what is listed');
+  const jump = await real('Clips/jump/secret.txt');
+  t.check(jump instanceof Error && jump.tag === 'read' && /not inside/.test(jump.message), 'a junction inside a linked folder does not lead out of it');
+  const tags = await Promise.all(['Clips/../big.mp4', 'Clips/../../secret/secret.txt', 'big.mp4/x', 'Clips/', 'Clips/nothing.mp4', 'gone.mp4', 'gone.mp4/x'].map((r) => real(r).then((e) => e.tag)));
+  t.check(tags.every((tag) => tag === 'read'), `"..", a path into a file, a file that is not in a linked folder, and a link that leads nowhere: each is refused as a problem with that file only (${tags})`);
+  t.check((await real('Clips')) === low(videos, 'Clips'), 'a linked folder asked for as a file leads to the folder, which is refused where it is opened (as a folder in the folder is)');
+  fs.renameSync(share, path.join(base, 'moved'));
+  t.check((await real('big.mp4')) === low(videos, 'big.mp4') && (await real('a.txt')).tag === 'gone', 'with the folder gone, what is shared from elsewhere is still served, and a file of the folder is "gone"');
+  fs.renameSync(path.join(base, 'moved'), share);
+
+  // what may be linked, and what it is called
+  const places = { home: 'C:\\Users\\ada', windir: 'C:\\Windows', userData: 'C:\\Users\\ada\\AppData\\Roaming\\FriendsShare', baseDir: 'C:\\Users\\ada\\Documents\\FriendsShare' };
+  const dir = 'C:\\Users\\ada\\Documents\\FriendsShare\\Clips';
+  const why = (src, isDir) => folder.unsafeToLink(src, isDir, dir, places);
+  t.check(/whole drive/.test(why('D:\\', true)) && /part of Windows/.test(why('C:\\Windows\\System32', true)) && /user folder/.test(why('C:\\Users\\ada', true)) && /own settings/.test(why('C:\\Users\\ada\\AppData\\Roaming\\FriendsShare\\remote', true)), 'a folder is held to the rules of a folder shared in place: no drive, nothing of Windows, not the user folder, not the settings of this app');
+  t.check(/friends are stored/.test(why('C:\\Users\\ada\\Documents', true)) && /friends are stored/.test(why('C:\\Users\\ada\\Documents\\FriendsShare', true)), 'nor the folder that holds the friends\' downloads, or one that contains it');
+  t.check(/contains the shared folder/.test(folder.unsafeToLink('D:\\Stuff', true, 'D:\\Stuff\\Share', places)) && /contains the shared folder/.test(why(dir, true)), 'a folder that contains the shared folder (or is it) is refused: everything in it would be listed twice');
+  t.check(why('D:\\Videos', true) === null && why('C:\\Users\\ada\\Videos\\clip.mp4', false) === null && why('C:\\Windows\\notepad.exe', false) === null, 'other folders are fine, and a single file from anywhere is');
+  t.check(/own settings/.test(why('C:\\Users\\ada\\AppData\\Roaming\\FriendsShare\\config.json', false)), 'except from the settings of this app');
+  const taken = new Set(['clip.mp4', 'clip (2).mp4', 'clips', 'notes']);
+  t.check(folder.freeName('other.mp4', false, taken) === 'other.mp4' && folder.freeName('clip.mp4', false, taken) === 'clip (3).mp4' && folder.freeName('CLIP.MP4', false, taken) === 'CLIP (3).MP4', 'a link is named after the file, numbered before the extension when the name is taken, whatever the case');
+  t.check(folder.freeName('Clips', true, taken) === 'Clips (2)' && folder.freeName('notes', false, taken) === 'notes (2)' && folder.freeName('.gitignore', false, new Set(['.gitignore'])) === '.gitignore (2)', 'a folder is numbered at the end, and so is a file without an extension');
+});
+
 await t.scenario('The owner\'s file list is stored apart from the settings, safely', async () => {
   const dir = t.resetDir(path.join(t.tmpRoot, 'unit-remote'));
   const store = createRemoteStore(path.join(dir, 'remote'));

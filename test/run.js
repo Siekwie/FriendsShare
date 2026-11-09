@@ -18,6 +18,7 @@ const FILES = [
   ['files.js', 'the file side with real transfers: choosing what to download, unreadable files, a folder that is gone, the owner\'s status'],
   ['hostile.js', 'hostile names and requests, a full disk, and a 1.2.0 app on either side'],
   ['folders.js', 'sharing a folder in place: the folders that are refused, and a huge one'],
+  ['links.js', 'files dropped on the window are shared from where they are, not copied'],
   ['big.js', 'thousands of small files: a complete sync, and how fast it lists and draws'],
 ];
 const LIMIT_MS = 8 * 60 * 1000;

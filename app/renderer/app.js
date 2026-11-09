@@ -35,8 +35,11 @@ const blockedHosts = new Map();
 const unregistered = new Set();
 
 // The file list of the folder in view, as the tree shows it: { id, role, kind: 'choice' | 'plain',
-// built (see tree.build), missing }. 'choice' is a friend's folder with the owner's list, where each
-// file and folder has a checkbox. Replaced whenever the folder is read again.
+// built (see tree.build), missing, gone, links }. 'choice' is a friend's folder with the owner's
+// list, where each file and folder has a checkbox. `missing` is the folder itself not being there;
+// `gone` is that and nothing shared from elsewhere in its place, so friends get nothing (see
+// folder.listShare). `links` are the files and folders the owner added from elsewhere, as listed.
+// Replaced whenever the folder is read again.
 let view = null;
 // when the folder in view was last read from the disk
 let listedAt = 0;
@@ -235,7 +238,7 @@ function renderDetail() {
       el('h2', { class: 'grow', id: 'files-title' }, 'Files'),
       share.role === 'guest' && el('button', { class: 'small', id: 'btn-selectall', hidden: true, onclick: selectAllOrNone }, 'Select all / none'),
       share.role === 'host' && el('button', { id: 'btn-add', onclick: () => addFiles(share) }, 'Add files')),
-    share.role === 'host' && el('div', { class: 'hint', id: 'import-hint' }, 'Drop files or folders anywhere on this window to copy them into the folder, or put them there yourself.'),
+    share.role === 'host' && el('div', { class: 'hint', id: 'import-hint' }, 'Drop files or folders anywhere on this window to share them from where they are. Nothing is copied. You can also put files into the folder itself.'),
     el('div', { class: 'hint', id: 'files-note' }),
     el('div', { class: 'files', id: 'files', role: 'tree', 'aria-label': 'Files' }));
   // The whole main area is drawn again (after every sync, say): somebody who is moving through the
@@ -335,7 +338,7 @@ function renderStatus() {
   if (share.role === 'host') {
     const info = hostInfo.get(share.id);
     const blocked = isBlockedHost(share);
-    const gone = view && view.id === share.id && view.missing;
+    const gone = view && view.id === share.id && view.gone;
     // a problem that keeps friends from the folder says so, whatever else is going on
     const problem = blocked
       ? `${p2p.message('blocked')} Click New code to share this folder again.`
@@ -372,7 +375,10 @@ function fileNote(id, key, items, shown) {
       shown();
     } }, open ? 'Hide' : 'Show'),
     open && el('ul', { class: 'note-files' },
-      ...list.map(({ path, note }) => el('li', {}, el('span', { class: 'path-text', title: path }, path), note && el('span', { class: 'why' }, note))),
+      ...list.map(({ path, note, action }) => el('li', {},
+        el('span', { class: 'path-text', title: path }, path),
+        note && el('span', { class: 'why' }, note),
+        action && el('button', { type: 'button', class: 'small', title: action.title, onclick: action.onclick }, action.label))),
       items.length > list.length && el('li', { class: 'why' }, `and ${items.length - list.length} more`)),
   ];
 }
@@ -449,7 +455,13 @@ async function refreshFiles(options = {}) {
   } else {
     built = tree.build(listing.files);
   }
-  view = { id: share.id, role: share.role, kind, built, missing: listing.missing };
+  const links = listing.links || [];
+  // the top-level entries that come from elsewhere carry their link, for the marker and the Remove
+  for (const link of links) {
+    const node = built.root.kids.get(link.name);
+    if (node) node.link = link;
+  }
+  view = { id: share.id, role: share.role, kind, built, missing: listing.missing, gone: !!listing.missing && !listing.files.length, links };
   renderFiles();
   // the owner's status line says when the folder cannot be found
   renderStatus();
@@ -462,12 +474,12 @@ function renderFiles() {
   const { built, kind } = view;
   const missing = share.role === 'host' && view.missing;
   const add = $('#btn-add');
-  if (add) add.disabled = !!missing;
+  if (add) add.disabled = !!(missing && view.gone);
   const selectAll = $('#btn-selectall');
   if (selectAll) selectAll.hidden = kind !== 'choice';
   const note = $('#files-note');
   note.replaceChildren();
-  if (missing) {
+  if (missing && view.gone) {
     keepTreeFocus = false;
     $('#files-title').textContent = 'Files';
     $('#files').replaceChildren(el('div', { class: 'missing', role: 'alert' },
@@ -480,6 +492,15 @@ function renderFiles() {
   $('#files-title').textContent = kind === 'choice'
     ? `Files (${root.wantedCount} of ${root.count} selected, ${formatBytes(root.wantedSize)})`
     : root.count ? `Files (${root.count}, ${formatBytes(root.size)})` : 'Files';
+  // the folder itself is gone, but what was added from elsewhere is still shared
+  if (missing) note.append(el('div', { class: 'error' }, missing === 'denied' ? 'The folder itself cannot be read; only what was added from elsewhere is shared.' : 'The folder itself cannot be found (moved, deleted, or its drive is not connected); only what was added from elsewhere is shared.'));
+  // files and folders added from elsewhere that are not where they were
+  const lost = (view.links || []).filter((l) => l.problem);
+  if (lost.length) {
+    const one = lost.length === 1;
+    note.append(el('div', {}, `${one ? 'A file or folder' : `${lost.length} files or folders`} added from elsewhere ${one ? 'is' : 'are'} not there any more, so friends do not see ${one ? 'it' : 'them'}. `,
+      ...fileNote(share.id, 'lost', lost.map((l) => ({ path: l.src, note: l.problem === 'denied' ? 'cannot be read' : 'cannot be found', action: { label: 'Remove', title: 'Take it out of this folder', onclick: () => unlink(share, l.name) } })), renderFiles).filter(Boolean)));
+  }
   // the owner's app chooses the names, and some cannot be written on Windows (see tree.unsafePath)
   if (built.bad.length) {
     const one = built.bad.length === 1;
@@ -554,10 +575,25 @@ function treeRow(row, key, current, choice, ui) {
   },
     el('span', { class: `chev${open ? ' open' : ''}`, 'aria-hidden': 'true' }),
     pick && checkbox(state),
-    el('span', { class: 'name', title: n.dir || !n.extra ? n.path : n.name }, n.name),
+    el('span', { class: 'name', title: n.link ? `Shared from ${n.link.src}` : n.dir || !n.extra ? n.path : n.name }, n.name),
+    // added from elsewhere (the owner's side only): where from, and a way out of the folder
+    n.link && el('span', { class: 'tag', title: `Shared from ${n.link.src}` }, 'elsewhere'),
+    n.link && el('button', { type: 'button', class: 'small unlink', title: 'Take it out of this folder. It stays where it is; nothing is deleted.', 'aria-label': `Remove ${n.name} from this folder`, tabindex: -1, onclick: () => unlink(selected(), n.name) }, 'Remove'),
     choice && el('span', { class: 'done' }, mark),
     el('span', { class: 'meta' }, n.dir ? plural(n.count, 'file') : ''),
     el('span', { class: 'size' }, formatBytes(n.size)));
+}
+
+// A file or folder that was added from elsewhere is taken out of the folder. It stays where it is.
+async function unlink(share, name) {
+  if (!share || share.role !== 'host') return;
+  try {
+    await api.unlink(share.id, name);
+  } catch (err) {
+    alert(errorText(err));
+  }
+  await reload();
+  refreshFiles({ fresh: true });
 }
 
 // the node of a key (see tree.rowKey)
@@ -629,7 +665,8 @@ function wireTree(box) {
   box.addEventListener('click', (e) => {
     const row = e.target.closest('.node');
     const target = row && view && rowFor(row.dataset.key);
-    if (!target) return;
+    // the Remove of a file added from elsewhere is a button of its own
+    if (!target || e.target.closest('.unlink')) return;
     uiState(view.id).focus = row.dataset.key;
     // the list is drawn again from what is chosen, so the box must not also change by itself
     if (e.target.closest('.check')) e.preventDefault();
@@ -685,6 +722,11 @@ function onTreeKey(e) {
       else if (target && view.kind === 'choice' && !target.node.extra) toggleNode(target.node);
       else if (dir) toggleOpen(dir, key);
       break;
+    case 'Delete':
+      // a file or folder added from elsewhere is taken out of the folder (it stays where it is)
+      if (target && target.node && target.node.link) unlink(selected(), target.node.name);
+      else return;
+      break;
     default:
       return;
   }
@@ -694,11 +736,12 @@ function onTreeKey(e) {
 async function importInto(share, run) {
   const hint = $('#import-hint');
   const before = hint?.textContent;
-  if (hint) hint.textContent = 'Copying…';
+  if (hint) hint.textContent = 'Adding…';
   try {
     await run();
   } catch (err) {
-    alert(`Could not add the files: ${errorText(err)}`);
+    // what could be added was added; this names what could not
+    alert(`Not everything could be added:\n\n${errorText(err)}`);
   }
   if (hint?.isConnected) hint.textContent = before;
   refreshFiles({ fresh: true });
@@ -717,7 +760,7 @@ async function openFolder(share) {
 // Naming the folder and where it is matters for one that was shared in place: it is the person's own.
 async function removeShare(share) {
   const what = share.role === 'host' ? `Stop sharing "${share.name}"? Its code stops working.` : `Remove "${share.name}" from the list?`;
-  const files = share.dir ? `Nothing is deleted. The files stay in ${share.dir}.` : 'Nothing was downloaded yet.';
+  const files = share.dir ? `Nothing is deleted. The files stay ${share.links?.length ? 'where they are' : `in ${share.dir}`}.` : 'Nothing was downloaded yet.';
   if (!confirm(`${what}\n\n${files}`)) return;
   // the server forgets the folder (frees its slot, and any wait for the owner) before another one asks for it
   if (share.role === 'guest' && share.code) await p2p.leave(share.code);

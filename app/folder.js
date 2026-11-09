@@ -1,6 +1,11 @@
 // Folders on disk, in the main process: what is in one, whether a request for a file stays inside
 // it, and whether a folder may be shared at all. Nothing here talks to Electron, so it is tested
 // without a window (test/unit.js).
+//
+// A shared folder can also hold "links": files and folders that lie somewhere else on this PC and
+// are shared from there (share.links in config.json, { name, src }). A link is listed under its
+// name at the top of the folder, as if it were in it, and served from where it really is. Nothing
+// is copied, so a 20 GB recording is shared the moment it is dropped on the window.
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -74,22 +79,58 @@ async function listFiles(dir) {
     }
   }
   await Promise.all(Array.from({ length: READERS }, reader));
-  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  sortFiles(files);
   return { files, missing };
 }
 
-// listFiles with a memory. A listing is reused for a few seconds, and a request that comes while
+const sortFiles = (files) => files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+// the first part of a path: what it is called at the top of the folder
+const topOf = (rel) => rel.slice(0, rel.indexOf('/') === -1 ? rel.length : rel.indexOf('/'));
+
+// The folder and its links together, as friends see it. A link is listed under its name; a linked
+// folder with everything in it, under "name/...". Where the folder has something of the same name
+// as a link (Windows ignores case), the link wins and that is left out. `missing` is about the
+// folder itself, as in listFiles: with links the share can still have files while the folder is
+// gone, and the caller decides what that means.
+// -> { files, missing, links: [{ name, src, dir, problem: null | 'missing' | 'denied' }] }
+async function listShare(dir, links = []) {
+  const base = await listFiles(dir);
+  if (!links.length) return { ...base, links: [] };
+  const names = new Set(links.map((l) => l.name.toLowerCase()));
+  const files = base.files.filter((f) => !names.has(topOf(f.path).toLowerCase()));
+  const info = await Promise.all(
+    links.map(async (link) => {
+      const out = { name: link.name, src: link.src, dir: false, problem: null };
+      const st = await fsp.stat(link.src).catch((err) => err);
+      if (st instanceof Error) out.problem = whyUnreadable(st);
+      else if (st.isFile()) files.push({ path: link.name, size: st.size, mtime: Math.floor(st.mtimeMs) });
+      else if (st.isDirectory()) {
+        out.dir = true;
+        const sub = await listFiles(link.src);
+        out.problem = sub.missing;
+        for (const f of sub.files) files.push({ path: `${link.name}/${f.path}`, size: f.size, mtime: f.mtime });
+      } else out.problem = 'missing';
+      return out;
+    })
+  );
+  sortFiles(files);
+  return { files, missing: base.missing, links: info };
+}
+
+// listShare with a memory. A listing is reused for a few seconds, and a request that comes while
 // one is running waits for that one, so several friends syncing at once and the window refreshing
 // cost one walk through the folder instead of one each. key: what the listing is kept under (the
-// share's id); a different dir under the same key starts over. fresh: do not reuse.
+// share's id); a different dir, or other links, under the same key starts over. fresh: do not reuse.
 function createLister(ttl = LISTING_TTL) {
   const cache = new Map();
   return {
-    list(key, dir, { fresh = false } = {}) {
+    list(key, dir, { fresh = false, links = [] } = {}) {
+      const sig = JSON.stringify(links);
       const hit = cache.get(key);
-      if (hit && !fresh && hit.dir === dir && (hit.at === null || Date.now() - hit.at < ttl)) return hit.promise;
-      const entry = { dir, at: null, promise: null };
-      entry.promise = listFiles(dir).then(
+      if (hit && !fresh && hit.dir === dir && hit.sig === sig && (hit.at === null || Date.now() - hit.at < ttl)) return hit.promise;
+      const entry = { dir, sig, at: null, promise: null };
+      entry.promise = listShare(dir, links).then(
         (result) => {
           entry.at = Date.now();
           return result;
@@ -148,22 +189,48 @@ function unsafeToShare(dir, { home, windir, userData, baseDir }) {
   return null;
 }
 
+// ---- links: files and folders shared from where they are ----
+
+// Why `src` must not be added to the share whose folder is `dir`, or null. A folder is held to the
+// same rules as a folder that is shared in place; a file only to the one about this app's settings.
+// isDir: whether src is a folder. places: as for unsafeToShare.
+function unsafeToLink(src, isDir, dir, places) {
+  if (path.parse(src).root === src) return 'That is a whole drive. Choose a folder on it instead.';
+  if (isDir) {
+    const why = unsafeToShare(src, places);
+    if (why) return why;
+    // everything in it would be listed twice
+    if (dir && within(src, dir)) return 'That folder contains the shared folder itself.';
+    return null;
+  }
+  if (places.userData && within(places.userData, src)) return "That file is part of FriendsShare's own settings.";
+  return null;
+}
+
+// The name a link gets: the name of the file or folder, and "name (2)" when that one is taken
+// (before the extension of a file: "clip (2).mp4"). taken: the names in use, in lower case.
+function freeName(name, isDir, taken) {
+  const dot = isDir ? -1 : name.lastIndexOf('.');
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${stem} (${n})${ext}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 // ---- serving a file ----
 
-// The real path of a file that a friend asked for by its path in the folder, once it is certain to
-// be a real file inside the folder. The text of the path is not enough: a junction or a symlink
-// inside the shared folder can lead anywhere, so the real path of the file is compared with the
-// real path of the folder. Throws a TaggedError: 'gone' when the folder itself is not there (that
-// ends the whole sync), 'read' when only this file cannot be served.
-async function realFile(root, rel) {
-  // the same rules as for what a friend's app writes: no device names, no ":stream", no ".."
-  const why = typeof rel === 'string' ? tree.unsafePath(rel) : 'it is not a path';
-  if (why) throw new TaggedError('read', `That path cannot be served: ${why}`);
+// The real path of a file under `root` that is asked for by its path in the folder, once it is
+// certain to be a real file inside the folder. The text of the path is not enough: a junction or a
+// symlink inside the shared folder can lead anywhere, so the real path of the file is compared with
+// the real path of the folder. Throws a TaggedError: rootTag when the folder itself is not there,
+// 'read' when only this file cannot be served.
+async function insideOf(root, rel, rootTag) {
   let realRoot;
   try {
     realRoot = await fsp.realpath(root);
   } catch {
-    throw new TaggedError('gone', 'The shared folder cannot be found');
+    throw new TaggedError(rootTag, 'The shared folder cannot be found');
   }
   let real;
   try {
@@ -175,4 +242,26 @@ async function realFile(root, rel) {
   return real;
 }
 
-module.exports = { TaggedError, within, listFiles, createLister, countFiles, unsafeToShare, realFile, MANY_FILES };
+// The real path of a file that a friend asked for by its path in the share: in the folder, or
+// behind one of its links (a linked file is the file itself, a linked folder is held to the same
+// rule as the folder). Throws a TaggedError: 'gone' when the folder itself is not there (that ends
+// the whole sync), 'read' when only this file cannot be served, a link that leads nowhere included.
+async function realFile(root, rel, links = []) {
+  // the same rules as for what a friend's app writes: no device names, no ":stream", no ".."
+  const why = typeof rel === 'string' ? tree.unsafePath(rel) : 'it is not a path';
+  if (why) throw new TaggedError('read', `That path cannot be served: ${why}`);
+  const top = topOf(rel).toLowerCase();
+  const link = links.find((l) => l.name.toLowerCase() === top);
+  if (!link) return insideOf(root, rel, 'gone');
+  if (rel.length === top.length) {
+    // the link itself: whether it is a file is checked where it is opened
+    try {
+      return await fsp.realpath(link.src);
+    } catch {
+      throw new TaggedError('read', 'The file cannot be found');
+    }
+  }
+  return insideOf(link.src, rel.slice(top.length + 1), 'read');
+}
+
+module.exports = { TaggedError, within, listFiles, listShare, createLister, countFiles, unsafeToShare, unsafeToLink, freeName, realFile, MANY_FILES };

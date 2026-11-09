@@ -420,7 +420,8 @@ const p2p = (() => {
     const gone = { t: 'fail', code: 'gone', reason: MESSAGES.gone };
     if (m.t === 'list') {
       const { files, missing } = await api.listFiles(share.id);
-      if (missing) return sendJson(peer, gone);
+      // the folder is gone, and nothing is shared from elsewhere (see folder.listShare) in its place
+      if (missing && !files.length) return sendJson(peer, gone);
       for (let i = 0; i < files.length; i += MANIFEST_BATCH) sendJson(peer, { t: 'files', files: files.slice(i, i + MANIFEST_BATCH) });
       sendJson(peer, { t: 'manifest', name: share.name, expiresAt: share.expiresAt });
     } else if (m.t === 'get') {
