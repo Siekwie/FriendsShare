@@ -72,6 +72,17 @@ function loadConfig(env = process.env) {
     extraBuilds.get(version).add(hash);
   }
 
+  // The classification service (lib/ipclass.js), e.g. http://ipclass:8080. Unset means off: the user
+  // agent alone decides who is a program.
+  const ipclassUrl = str('IPCLASS_URL');
+  if (ipclassUrl) {
+    try {
+      if (!['http:', 'https:'].includes(new URL(ipclassUrl).protocol)) throw new Error('scheme');
+    } catch {
+      throw new ConfigError('IPCLASS_URL must be an http:// or https:// address such as http://ipclass:8080');
+    }
+  }
+
   const operator = {
     name: str('OPERATOR_NAME'),
     address: (str('OPERATOR_ADDRESS') || '').split(';').map((s) => s.trim()).filter(Boolean),
@@ -95,6 +106,7 @@ function loadConfig(env = process.env) {
       ? { session: '__Host-fs_session', state: '__Host-fs_oauth_state', statePath: '/' }
       : { session: 'fs_session', state: 'fs_oauth_state', statePath: '/auth' },
     trustProxy: flag('TRUST_PROXY'),
+    ipclassUrl,
     // null: createServer reads or creates DATA_DIR/secret.key
     appSecret: str('APP_SECRET'),
     // The operator's admin interface (admin.js): a listener of its own, with no login, that is

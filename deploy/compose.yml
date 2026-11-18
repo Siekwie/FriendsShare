@@ -14,6 +14,8 @@ services:
       DATA_DIR: /data
       # Caddy is the one proxy in front; it reports the client address in X-Forwarded-For
       TRUST_PROXY: 1
+      # the classification service that tells people from programs (its own container, see its README)
+      IPCLASS_URL: http://ipclass:8080
     volumes:
       - ./data:/data
     # No published ports: only the proxy, on the same Docker network, can reach the app.

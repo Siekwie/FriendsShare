@@ -431,7 +431,7 @@ async function connectApp(h, { hello = {}, official = null, path: urlPath = '/ws
 
 // ---- the server under test ----
 
-async function startServer({ env = {}, tune, net: givenNet, prepare, dir: givenDir } = {}) {
+async function startServer({ env = {}, tune, net: givenNet, prepare, dir: givenDir, classify } = {}) {
   const dir = givenDir || fs.mkdtempSync(path.join(os.tmpdir(), 'friendsshare-test-'));
   // a chance to put files into the data directory before the server starts (an old rooms.json)
   if (prepare) prepare(path.join(dir, 'data'));
@@ -450,7 +450,7 @@ async function startServer({ env = {}, tune, net: givenNet, prepare, dir: givenD
   const clock = { t: START, advance(ms) { clock.t += ms; } };
   const net = typeof givenNet === 'function' ? givenNet(config) : givenNet || createNet(config);
   const logs = [];
-  const server = createServer({ config, fetchFn: net.fetch, now: () => clock.t, log: (line) => logs.push(line) });
+  const server = createServer({ config, fetchFn: net.fetch, now: () => clock.t, log: (line) => logs.push(line), classify });
   const { port } = await server.listen(0, '127.0.0.1');
   return {
     server,

@@ -3,6 +3,7 @@
 // are no inline scripts or styles (the CSP forbids them): see admin-site/.
 const { escapeHtml, compareVersions, isVersion } = require('./util');
 const { GRACE_MS, isRunning } = require('./plan');
+const { BOT_KINDS } = require('./ipclass');
 
 class Html {
   constructor(value) {
@@ -539,6 +540,21 @@ const PAGE_NAMES = {
   '/terms': 'Terms  /terms',
 };
 
+// The period columns of the people and bots table: the same periods as the tiles.
+const PERIODS = (r) => [
+  ['Today', r.today],
+  ['Last 7 days', r.week],
+  [`Last ${r.days.length} days`, r.month],
+  ['Ever', r.allTime],
+];
+
+// "kind/name" as lib/stats.js counts it, shown as the name with its kind after it.
+function botNameLabel(full) {
+  const at = full.indexOf('/');
+  const kind = full.slice(0, at);
+  return html`${full.slice(at + 1)} <span class="muted">${BOT_KINDS[kind] || kind}</span>`;
+}
+
 // data: { report (lib/stats.js trafficReport), stats (accountStats), live (liveCounts or null) }
 function trafficPage(site, data) {
   const { report: r, stats, live } = data;
@@ -546,10 +562,23 @@ function trafficPage(site, data) {
     html`<li class="tile"><span class="tile-label">${label}</span><span class="tile-value">${number(r.month[field])}</span><span class="tile-sub">today ${number(r.today[field])} · 7 days ${number(r.week[field])} · ever ${number(r.allTime[field])}</span></li>`;
   const share = (n) => (r.month.visitors ? `${Math.round((1000 * n) / r.month.visitors) / 10}%` : '–');
   const step = (label, n) => html`<tr><td>${label}</td><td class="num">${number(n)}</td><td class="num muted">${share(n)}</td></tr>`;
+  const botShare = (t) => (t.views + t.bots ? `${Math.round((1000 * t.bots) / (t.views + t.bots)) / 10}%` : '–');
+  const peopleAndBots = html`<section class="card" aria-labelledby="people-bots-title">
+    <h2 id="people-bots-title">People and bots <span class="muted">page views</span></h2>
+    <table class="count-table">
+      <thead><tr><th scope="col">Viewed by</th>${PERIODS(r).map(([label]) => html`<th scope="col" class="num">${label}</th>`)}</tr></thead>
+      <tbody>
+        <tr><td>People</td>${PERIODS(r).map(([, t]) => html`<td class="num">${number(t.views)}</td>`)}</tr>
+        <tr><td>Bots</td>${PERIODS(r).map(([, t]) => html`<td class="num">${number(t.bots)}</td>`)}</tr>
+        <tr><td>Bots' share</td>${PERIODS(r).map(([, t]) => html`<td class="num muted">${botShare(t)}</td>`)}</tr>
+      </tbody>
+    </table>
+    <p class="muted small">Bots are crawlers, link previews, monitors and scripts. Their page views are counted apart, and they are never counted as visitors.</p>
+  </section>`;
 
   const body = html`
 <h1>Traffic</h1>
-<p class="muted page-note">Anonymous totals per day (UTC), counted by the site itself: no cookies, nothing stored about a visitor. Only browsers count: monitors and scripts are left out, and crawlers as far as they say who they are. A visitor is counted once per day, so over several days the number means visits. New accounts are those that still exist.</p>
+<p class="muted page-note">Anonymous totals per day (UTC), counted by the site itself: no cookies, nothing stored about a visitor. Only people count as visitors: bots (crawlers, link previews, monitors and scripts) are counted apart, by kind and by name, and crawlers are named as far as they say who they are or can be checked. A visitor is counted once per day, so over several days the number means visits. New accounts are those that still exist.</p>
 
 <h2 class="tiles-title">Last ${r.days.length} days</h2>
 <ul class="tiles tiles-6">
@@ -595,14 +624,23 @@ function trafficPage(site, data) {
   ${countTable("Visitors' systems", 'System', r.systems, 'No visitors yet.')}
 </div>
 
+<div class="admin-grid">
+  ${peopleAndBots}
+  ${countTable('Bots and crawlers', 'Kind', r.botKinds, 'No bots counted yet. Crawlers, link previews, monitors and scripts show up here by kind; they are not counted as visitors.', (kind) => BOT_KINDS[kind] || kind)}
+</div>
+
+<div class="admin-grid">
+  ${countTable('Bots by name', 'Name', r.botNames, 'No bot has been counted by name yet.', botNameLabel)}
+</div>
+
 <details class="card daily">
   <summary>Every day as numbers</summary>
   <div class="table-wrap">
     <table class="admin-table">
-      <thead><tr><th scope="col">Day</th><th scope="col" class="num">Visitors</th><th scope="col" class="num">Page views</th><th scope="col" class="num">Downloads</th><th scope="col" class="num">New accounts</th><th scope="col" class="num">Checkouts started</th><th scope="col" class="num">Pro bought</th></tr></thead>
+      <thead><tr><th scope="col">Day</th><th scope="col" class="num">Visitors</th><th scope="col" class="num">Page views</th><th scope="col" class="num">Bot page views</th><th scope="col" class="num">Downloads</th><th scope="col" class="num">New accounts</th><th scope="col" class="num">Checkouts started</th><th scope="col" class="num">Pro bought</th></tr></thead>
       <tbody>
         ${[...r.days].reverse().map(
-          (d) => html`<tr><td class="nowrap">${longDay.format(asDate(d.day))}</td><td class="num">${number(d.visitors)}</td><td class="num">${number(d.views)}</td><td class="num">${number(d.downloads)}</td><td class="num">${number(d.signups)}</td><td class="num">${number(d.checkouts)}</td><td class="num">${number(d.bought)}</td></tr>`,
+          (d) => html`<tr><td class="nowrap">${longDay.format(asDate(d.day))}</td><td class="num">${number(d.visitors)}</td><td class="num">${number(d.views)}</td><td class="num">${number(d.bots)}</td><td class="num">${number(d.downloads)}</td><td class="num">${number(d.signups)}</td><td class="num">${number(d.checkouts)}</td><td class="num">${number(d.bought)}</td></tr>`,
         )}
       </tbody>
     </table>

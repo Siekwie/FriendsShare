@@ -461,6 +461,10 @@ test('the traffic page shows the totals, the charts and every day as numbers', (
     add(1, 'referrer', '<img src=x>.example', 3);
     add(1, 'system', 'Windows', 9);
     add(1, 'system', 'Linux', 1);
+    add(0, 'bot', 'monitor', 40);
+    add(0, 'botname', 'monitor/UptimeRobot', 40);
+    add(1, 'bot', 'search', 10);
+    add(1, 'botname', 'search/Google', 10);
     h.server.writeLive();
 
     const res = await admin.get('/traffic');
@@ -492,7 +496,16 @@ test('the traffic page shows the totals, the charts and every day as numbers', (
     // a made-up referrer is text
     assert.ok(page.includes('&lt;img src=x&gt;.example'));
     assert.ok(!page.includes('<img src=x>'));
-    assert.match(page, /<td class="nowrap">Thu, Oct 8, 2026<\/td><td class="num">1,234<\/td><td class="num">2,005<\/td><td class="num">0<\/td><td class="num">0<\/td><td class="num">0<\/td><td class="num">0<\/td>/);
+    assert.match(page, /<td class="nowrap">Thu, Oct 8, 2026<\/td><td class="num">1,234<\/td><td class="num">2,005<\/td><td class="num">40<\/td><td class="num">0<\/td><td class="num">0<\/td><td class="num">0<\/td><td class="num">0<\/td>/);
+    // people and bots, for the same periods as the tiles
+    assert.match(page, /<td>People<\/td><td class="num">2,005<\/td><td class="num">2,005<\/td><td class="num">2,005<\/td><td class="num">2,005<\/td>/);
+    assert.match(page, /<td>Bots<\/td><td class="num">40<\/td><td class="num">50<\/td><td class="num">50<\/td><td class="num">50<\/td>/);
+    assert.match(page, /<td>Bots' share<\/td><td class="num muted">2%<\/td><td class="num muted">2\.4%<\/td>/);
+    // the bots by kind and by name, the kind written out
+    assert.match(page, /<td class="wrap-any">Monitors<\/td><td class="num">40<\/td><td class="num muted">80%<\/td>/);
+    assert.match(page, /<td class="wrap-any">Search engines<\/td><td class="num">10<\/td><td class="num muted">20%<\/td>/);
+    assert.match(page, /<td class="wrap-any">UptimeRobot <span class="muted">Monitors<\/span><\/td><td class="num">40<\/td>/);
+    assert.match(page, /<th scope="col" class="num">Bot page views<\/th>/);
     assert.ok(ids.Ada);
   }));
 

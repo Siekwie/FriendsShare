@@ -11,7 +11,7 @@
 
 <main id="main" class="legal" tabindex="-1">
   <h1>Privacy</h1>
-  <p class="muted">Last updated: 7 October 2026</p>
+  <p class="muted">Last updated: 18 November 2026</p>
 
   <p>This page says what FriendsShare at {{site_url}} and the FriendsShare app store about you, why, and for how long. The short version: no advertising, no tracking, no cookies just for visiting, and your files never reach our server. Visits are only counted, as totals per day. What the server does keep is small, and it is deleted when it is no longer needed.</p>
 
@@ -23,7 +23,8 @@
   <ul>
     <li>Your browser sends its IP address with every request. The FriendsShare server uses it to answer the request and keeps no access log.</li>
     <li>No cookie is set. If you switch between the light and dark theme, your browser remembers that choice in its local storage. It is never sent anywhere.</li>
-    <li>The server counts how much this site is used, as totals per day and nothing else: pages viewed, visitors, clicks on the download button, checkouts started and subscriptions bought, the name of the website a visitor came from (for example <code>github.com</code>) and the kind of operating system. To count a visitor only once a day, it keeps a hash of the IP address and the browser's name in memory until midnight (UTC). The hash is mixed with a random value that changes every day, it is never written to disk, and the totals cannot be traced back to anybody. Search engines and other crawlers are not counted.</li>
+    <li>The server counts how much this site is used, as totals per day and nothing else: pages viewed, visitors, clicks on the download button, checkouts started and subscriptions bought, the name of the website a visitor came from (for example <code>github.com</code>) and the kind of operating system. To count a visitor only once a day, it keeps a hash of the IP address and the browser's name in memory until midnight (UTC). The hash is mixed with a random value that changes every day, it is never written to disk, and the totals cannot be traced back to anybody.</li>
+    <li>Requests by programs, such as search engine crawlers, link previews, monitors and scripts, are not counted as visits. They are counted apart, per day, by kind (for example <code>search</code> or <code>monitor</code>) and, where it is known, by the name of the program or of the hosting company it calls from (for example <code>Google</code> or <code>Hetzner</code>). To tell them apart, a service on the same server checks the address and the browser's name against a public list of the networks of hosting companies. Only for a caller that already looks like a program does it also look up the name that belongs to the address in the DNS, which the DNS server sees. The address itself is not stored, and nothing about a program is kept beyond those daily counts.</li>
     <li>There is no tracking from one website to another, no profile of you and no analytics service, and the pages load no fonts, scripts or images from other companies.</li>
   </ul>
   <p>Legal basis: Art. 6 (1) (f) GDPR, our interest in running the site securely.</p>

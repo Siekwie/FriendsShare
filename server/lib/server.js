@@ -18,7 +18,8 @@ const { createBuilds } = require('./builds');
 const { createMatch } = require('./match');
 const { createOperator } = require('./operator');
 const { createSite } = require('./site');
-const { Today, recordRequest } = require('./stats');
+const { Today, recordRequest, countable, judgeByAgent } = require('./stats');
+const { createClassifier, readVerdict } = require('./ipclass');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -65,7 +66,9 @@ function importRooms(db, dataDir, now, log) {
   }
 }
 
-function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log = (line) => console.log(line) }) {
+// classify(address, userAgent) -> { bot, category, name }: tests pass their own; by default it asks the
+// service named by IPCLASS_URL (lib/ipclass.js), or judges by the user agent when there is none.
+function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log = (line) => console.log(line), classify }) {
   if (!config.appSecret) config.appSecret = ensureSecret(config.dataDir, log);
   const db = openDb(config.dbPath);
   importRooms(db, config.dataDir, now, log);
@@ -120,13 +123,16 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
 
   const today = new Today();
   const ownHost = new URL(config.baseUrl).hostname.replace(/^www\./, '');
+  const classifyCaller = classify || createClassifier({ url: config.ipclassUrl, fetchFn, log });
   let closing = null;
 
-  // Adds an answered request to the anonymous daily totals.
+  // Adds an answered request to the anonymous daily totals. This runs when the answer has been sent:
+  // who the caller is comes from the classification service, which may be slow, so the count follows
+  // it and nothing waits for it. Requests the totals could never take are not classified at all.
   function count(req, res, pathname) {
     if (closing) return;
     try {
-      recordRequest(db, today, {
+      const sample = {
         nowMs: now(),
         method: req.method,
         path: pathname,
@@ -135,7 +141,18 @@ function createServer({ config, fetchFn = globalThis.fetch, now = Date.now, log 
         userAgent: String(req.headers['user-agent'] || ''),
         referrer: req.headers.referer,
         ownHost,
-      });
+      };
+      if (!countable(sample)) return;
+      Promise.resolve()
+        .then(() => classifyCaller(sample.address, sample.userAgent))
+        .catch(() => null)
+        .then((answer) => {
+          // whatever the classifier did not say properly, the user agent decides
+          const verdict = readVerdict(answer) || judgeByAgent(sample.userAgent);
+          // the server may have closed the database while the service was answering
+          if (!closing) recordRequest(db, today, { ...sample, verdict });
+        })
+        .catch((err) => log(`[stats] could not count a request: ${err.message}`));
     } catch (err) {
       log(`[stats] could not count a request: ${err.message}`);
     }

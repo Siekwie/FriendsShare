@@ -99,6 +99,13 @@ test('PORT, DATA_DIR and BASE_URL are read, and the base address is reduced to i
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('IPCLASS_URL switches on the classification service; unset or empty means off, and a wrong address is refused', () => {
+  assert.equal(loadConfig({}).ipclassUrl, null);
+  assert.equal(loadConfig({ IPCLASS_URL: '  ' }).ipclassUrl, null);
+  assert.equal(loadConfig({ IPCLASS_URL: 'http://ipclass:8080' }).ipclassUrl, 'http://ipclass:8080');
+  for (const bad of ['ipclass:8080', 'ftp://ipclass:8080']) assert.throws(() => loadConfig({ IPCLASS_URL: bad }), ConfigError, bad);
+});
+
 test('billing is on only with all four Stripe values and at least one way to sign in', () => {
   const stripe = { STRIPE_SECRET_KEY: 'sk', STRIPE_WEBHOOK_SECRET: 'wh', STRIPE_PRICE_MONTHLY: 'pm', STRIPE_PRICE_YEARLY: 'py' };
   const github = { GITHUB_CLIENT_ID: 'id', GITHUB_CLIENT_SECRET: 'secret' };

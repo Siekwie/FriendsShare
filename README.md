@@ -133,7 +133,9 @@ Stripe, and an account is deleted by its owner.
 The traffic numbers are counted by the site itself (`server/lib/stats.js`): totals per day in the
 table `stats_daily`, nothing about a single visitor. To count a visitor once per day the server
 keeps a salted hash of address and browser in memory until midnight; it never reaches the disk.
-Crawlers are left out as far as their user agent says what they are. The download button goes
+Requests by programs (crawlers, link previews, monitors, scripts) are counted apart, per day by kind and
+name, as page views only. Which kind of program it is comes from the classification service (`IPCLASS_URL`, see
+`deploy/env.example`), or by the user agent alone when there is none. The download button goes
 through `/download` so that the click can be counted. The privacy page describes all of this; keep
 it in step when you change what is counted.
 

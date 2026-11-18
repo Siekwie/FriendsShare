@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { withServer, signIn, signWebhook, subscription, connectApp, until, START, BILLING_ENV, LOGIN_ENV } = require('./helpers');
 const { openDb } = require('../lib/db');
-const { bump, tally, Today, isBot, systemOf, referrerHost, recordRequest, trafficReport } = require('../lib/stats');
+const { bump, tally, Today, isBot, judgeByAgent, systemOf, referrerHost, recordRequest, trafficReport } = require('../lib/stats');
+const { createClassifier, readVerdict, BOT_KINDS, CATEGORIES } = require('../lib/ipclass');
 const { liveCounts } = require('../lib/admin-data');
 
 const DAY = 86_400_000;
@@ -111,8 +112,6 @@ test('a request is counted for what it is: a page, a download, a checkout, or no
 
     const before = totals(db);
     for (const nothing of [
-      hit({ userAgent: GOOGLEBOT }),
-      hit({ userAgent: '' }),
       hit({ userAgent: GOOGLEBOT, path: '/download', status: 302 }),
       hit({ status: 404, path: '/nothing' }),
       hit({ status: 500 }),
@@ -136,6 +135,152 @@ test('a request is counted for what it is: a page, a download, a checkout, or no
     assert.ok(!dump.includes('203.0.113') && !dump.includes('Firefox') && !dump.includes('Siekwie'), dump);
     assert.deepEqual([...new Set(db.all('SELECT day FROM stats_daily').map((r) => r.day))], ['2026-10-05']);
   }));
+
+// ---- programs ----
+
+const bot = (category, name = '') => ({ bot: true, category, name });
+const person = { bot: false, category: 'human', name: '' };
+
+test('a program is counted by kind and by name, and never as a visitor or a view', () =>
+  withDb((db) => {
+    const today = new Today();
+    recordRequest(db, today, hit({ userAgent: GOOGLEBOT, verdict: bot('search', 'Google') }));
+    assert.deepEqual(totals(db), { 'bot:search': 1, 'botname:search/Google': 1 });
+    recordRequest(db, today, hit({ userAgent: GOOGLEBOT, verdict: bot('search', 'Google') }));
+    recordRequest(db, today, hit({ path: '/privacy', verdict: bot('monitor', 'UptimeRobot') }));
+    recordRequest(db, today, hit({ path: '/login', verdict: bot('script') }));
+    assert.deepEqual(totals(db), { 'bot:search': 2, 'botname:search/Google': 2, 'bot:monitor': 1, 'botname:monitor/UptimeRobot': 1, 'bot:script': 1, 'botname:script/Unknown': 1 });
+    assert.equal(db.get("SELECT COUNT(*) AS n FROM stats_daily WHERE kind IN ('view', 'visitor', 'system', 'referrer')").n, 0);
+  }));
+
+test('a program that is judged a person counts as a visitor, whatever its user agent says', () =>
+  withDb((db) => {
+    // a browser's user agent from a hosting company's address: the verdict decides
+    recordRequest(db, new Today(), hit({ userAgent: FIREFOX, verdict: bot('datacenter', 'Hetzner') }));
+    assert.deepEqual(totals(db), { 'bot:datacenter': 1, 'botname:datacenter/Hetzner': 1 });
+    recordRequest(db, new Today(), hit({ userAgent: GOOGLEBOT, verdict: person }));
+    assert.equal(totals(db)['visitor:'], 1);
+    assert.equal(totals(db)['view:/'], 1);
+    assert.equal(totals(db)['bot:crawler'], undefined);
+  }));
+
+test('the programs judged by the user agent alone when there is no verdict', () => {
+  assert.deepEqual(judgeByAgent(GOOGLEBOT), { bot: true, category: 'crawler', name: 'Unclassified' });
+  assert.deepEqual(judgeByAgent(''), { bot: true, category: 'crawler', name: 'Unclassified' });
+  assert.deepEqual(judgeByAgent(FIREFOX), { bot: false, category: 'human', name: '' });
+  withDb((db) => {
+    recordRequest(db, new Today(), hit({ userAgent: GOOGLEBOT }));
+    assert.deepEqual(totals(db), { 'bot:crawler': 1, 'botname:crawler/Unclassified': 1 });
+  });
+});
+
+test('a program only counts for the pages, answered with 200 and asked for with GET', () =>
+  withDb((db) => {
+    const today = new Today();
+    const program = bot('scanner', 'Shodan');
+    for (const nothing of [
+      hit({ path: '/download', status: 302, verdict: program }),
+      hit({ method: 'POST', path: '/api/billing/checkout', verdict: program }),
+      hit({ method: 'HEAD', verdict: program }),
+      hit({ status: 404, path: '/nothing', verdict: program }),
+      hit({ path: '/site.css', verdict: program }),
+      hit({ path: '/api/me', verdict: program }),
+      hit({ status: 301, verdict: program }),
+    ]) {
+      recordRequest(db, today, nothing);
+    }
+    assert.deepEqual(totals(db), {});
+    recordRequest(db, today, hit({ path: '/terms', verdict: program }));
+    assert.deepEqual(totals(db), { 'bot:scanner': 1, 'botname:scanner/Shodan': 1 });
+  }));
+
+test('the names of programs are capped per day, and the rest counts under their kind as "other"', () =>
+  withDb((db) => {
+    const today = new Today({ maxBotNames: 2 });
+    recordRequest(db, today, hit({ verdict: bot('ai', 'OpenAI') }));
+    recordRequest(db, today, hit({ verdict: bot('ai', 'Perplexity') }));
+    recordRequest(db, today, hit({ verdict: bot('ai', 'Someone') }));
+    recordRequest(db, today, hit({ verdict: bot('ai', 'OpenAI') }));
+    assert.equal(today.botName(START, 'ai', 'Else'), 'ai/(other)');
+    assert.deepEqual(totals(db), { 'bot:ai': 4, 'botname:ai/OpenAI': 2, 'botname:ai/Perplexity': 1, 'botname:ai/(other)': 1 });
+    assert.equal(today.botName(START + DAY, 'ai', 'Else'), 'ai/Else', 'a new day');
+  }));
+
+test('the kinds of program and the verdicts that can be trusted', () => {
+  assert.deepEqual([...CATEGORIES].sort(), ['ai', 'crawler', 'datacenter', 'fake', 'human', 'monitor', 'preview', 'scanner', 'script', 'search', 'seo']);
+  assert.equal(BOT_KINDS.monitor, 'Monitors');
+  assert.deepEqual(readVerdict({ bot: true, category: 'datacenter', name: 'Hetzner', by: 'address' }), { bot: true, category: 'datacenter', name: 'Hetzner' });
+  assert.deepEqual(readVerdict({ bot: false, category: 'human', name: '' }), { bot: false, category: 'human', name: '' });
+  assert.deepEqual(readVerdict({ bot: true, category: 'search', name: '   ' }), { bot: true, category: 'search', name: 'Unknown' });
+  assert.equal(readVerdict({ bot: true, category: 'search', name: 'x'.repeat(300) }).name.length, 80);
+  for (const bad of [null, [], 'bot', {}, { bot: true, category: 'human', name: '' }, { bot: false, category: 'search', name: '' }, { bot: 'yes', category: 'ai', name: '' }, { bot: true, category: 'weird', name: '' }, { bot: true, category: 'ai' }, { bot: false, category: 'human', name: 7 }]) {
+    assert.equal(readVerdict(bad), null, JSON.stringify(bad));
+  }
+});
+
+// ---- the classification service ----
+
+const answer = (body, status = 200) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+
+test('without a service the user agent decides, and nothing is asked', async () => {
+  let asked = 0;
+  const classify = createClassifier({ url: '', fetchFn: async () => (asked++, answer({})()) });
+  assert.deepEqual(await classify('203.0.113.7', GOOGLEBOT), { bot: true, category: 'crawler', name: 'Unclassified' });
+  assert.deepEqual(await classify('203.0.113.7', FIREFOX), { bot: false, category: 'human', name: '' });
+  assert.equal(asked, 0);
+});
+
+test('the service is asked with the address and the user agent, and its verdict is used', async () => {
+  const sent = [];
+  const fetchFn = async (url, init) => {
+    sent.push({ url, init });
+    return answer({ bot: true, category: 'datacenter', name: 'Hetzner', by: 'address' })();
+  };
+  const classify = createClassifier({ url: 'http://ipclass:8080/', fetchFn });
+  assert.deepEqual(await classify('5.9.1.1', FIREFOX), { bot: true, category: 'datacenter', name: 'Hetzner' });
+  assert.equal(sent[0].url, 'http://ipclass:8080/classify');
+  assert.equal(sent[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(sent[0].init.body), { ip: '5.9.1.1', ua: FIREFOX });
+  assert.ok(sent[0].init.signal, 'the request has a timeout');
+});
+
+test('when the service fails, answers oddly or does not answer in time, the user agent decides', async () => {
+  const logs = [];
+  const log = (line) => logs.push(line);
+  const failing = [
+    async () => {
+      throw new Error('connect ECONNREFUSED');
+    },
+    answer({ bot: true }, 500),
+    answer('not json'),
+    async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } }),
+    answer({ bot: true, category: 'nonsense', name: 'x' }),
+  ];
+  for (const fetchFn of failing) {
+    const classify = createClassifier({ url: 'http://ipclass:8080', fetchFn, log });
+    assert.deepEqual(await classify('203.0.113.7', GOOGLEBOT), { bot: true, category: 'crawler', name: 'Unclassified' });
+    assert.deepEqual(await classify('203.0.113.7', FIREFOX), { bot: false, category: 'human', name: '' });
+  }
+  assert.equal(logs.length, failing.length, 'each of them reports its first failure');
+  assert.match(logs[0], /^\[stats\] could not classify a caller, counted by its user agent instead: connect ECONNREFUSED$/);
+
+  // a service that never answers: the answer comes after the timeout, not later
+  const silent = createClassifier({ url: 'http://ipclass:8080', timeoutMs: 20, fetchFn: () => new Promise(() => {}) });
+  const started = Date.now();
+  assert.deepEqual(await silent('203.0.113.7', FIREFOX), { bot: false, category: 'human', name: '' });
+  assert.ok(Date.now() - started < 1000);
+});
+
+test('the reporting of a failing service is held back to one line a minute', async () => {
+  const logs = [];
+  let at = 0;
+  const classify = createClassifier({ url: 'http://ipclass:8080', fetchFn: async () => { throw new Error('down'); }, log: (line) => logs.push(line), now: () => at });
+  await classify('203.0.113.7', FIREFOX);
+  await classify('203.0.113.7', FIREFOX);
+  at += 60_000;
+  await classify('203.0.113.7', FIREFOX);
+  assert.equal(logs.length, 2);
+});
 
 test('counting in passing never fails what it is part of', () =>
   withDb((db) => {
@@ -164,17 +309,23 @@ test('the report has every one of the last 30 days, sums for today, a week, a mo
     add(0, 'checkout', 'started', 1);
     add(0, 'subscription', 'live', 1);
     add(0, 'subscription', 'test', 5);
+    add(0, 'bot', 'search', 2);
+    add(0, 'botname', 'search/Google', 2);
     add(3, 'visitor', '', 10);
     add(3, 'view', '/', 12);
     add(3, 'referrer', 'github.com', 6);
     add(3, 'referrer', 'reddit.com', 2);
     add(3, 'system', 'Windows', 9);
     add(3, 'system', 'Linux', 1);
+    add(3, 'bot', 'monitor', 5);
+    add(3, 'botname', 'monitor/UptimeRobot', 5);
     add(29, 'visitor', '', 1);
     add(40, 'visitor', '', 100);
     add(40, 'download', 'windows', 7);
     add(40, 'subscription', 'live', 2);
     add(40, 'referrer', 'old.example', 50);
+    add(40, 'bot', 'ai', 9);
+    add(40, 'botname', 'ai/OpenAI', 9);
     const account = (id, daysAgo) => db.run('INSERT INTO accounts (id, name, created_at) VALUES (?, ?, ?)', id, id, START - daysAgo * DAY);
     account('a1', 0);
     account('a2', 3);
@@ -185,22 +336,24 @@ test('the report has every one of the last 30 days, sums for today, a week, a mo
     assert.equal(r.days.length, 30);
     assert.equal(r.days[29].day, '2026-10-05');
     assert.equal(r.days[0].day, '2026-09-06');
-    assert.deepEqual(r.days[29], { day: '2026-10-05', visitors: 3, views: 5, downloads: 2, signups: 1, checkouts: 1, bought: 1 });
-    assert.deepEqual(r.days[26], { day: '2026-10-02', visitors: 10, views: 12, downloads: 0, signups: 2, checkouts: 0, bought: 0 });
-    assert.deepEqual(r.days[28], { day: '2026-10-04', visitors: 0, views: 0, downloads: 0, signups: 0, checkouts: 0, bought: 0 });
-    assert.deepEqual(r.today, { visitors: 3, views: 5, downloads: 2, signups: 1, checkouts: 1, bought: 1 });
-    assert.deepEqual(r.week, { visitors: 13, views: 17, downloads: 2, signups: 3, checkouts: 1, bought: 1 });
-    assert.deepEqual(r.month, { visitors: 14, views: 17, downloads: 2, signups: 3, checkouts: 1, bought: 1 });
+    assert.deepEqual(r.days[29], { day: '2026-10-05', visitors: 3, views: 5, bots: 2, downloads: 2, signups: 1, checkouts: 1, bought: 1 });
+    assert.deepEqual(r.days[26], { day: '2026-10-02', visitors: 10, views: 12, bots: 5, downloads: 0, signups: 2, checkouts: 0, bought: 0 });
+    assert.deepEqual(r.days[28], { day: '2026-10-04', visitors: 0, views: 0, bots: 0, downloads: 0, signups: 0, checkouts: 0, bought: 0 });
+    assert.deepEqual(r.today, { visitors: 3, views: 5, bots: 2, downloads: 2, signups: 1, checkouts: 1, bought: 1 });
+    assert.deepEqual(r.week, { visitors: 13, views: 17, bots: 7, downloads: 2, signups: 3, checkouts: 1, bought: 1 });
+    assert.deepEqual(r.month, { visitors: 14, views: 17, bots: 7, downloads: 2, signups: 3, checkouts: 1, bought: 1 });
     // what was bought with a test card is in neither sum
-    assert.deepEqual(r.allTime, { visitors: 114, views: 17, downloads: 9, signups: 4, checkouts: 1, bought: 3 });
+    assert.deepEqual(r.allTime, { visitors: 114, views: 17, bots: 16, downloads: 9, signups: 4, checkouts: 1, bought: 3 });
     assert.deepEqual(r.pages, [{ name: '/', count: 16 }, { name: '/privacy', count: 1 }]);
     assert.deepEqual(r.referrers, [{ name: 'github.com', count: 6 }, { name: 'reddit.com', count: 2 }]);
     assert.deepEqual(r.systems, [{ name: 'Windows', count: 9 }, { name: 'Linux', count: 1 }]);
+    assert.deepEqual(r.botKinds, [{ name: 'monitor', count: 5 }, { name: 'search', count: 2 }]);
+    assert.deepEqual(r.botNames, [{ name: 'monitor/UptimeRobot', count: 5 }, { name: 'search/Google', count: 2 }]);
 
     const empty = withDb((fresh) => trafficReport(fresh, START));
-    assert.deepEqual(empty.month, { visitors: 0, views: 0, downloads: 0, signups: 0, checkouts: 0, bought: 0 });
+    assert.deepEqual(empty.month, { visitors: 0, views: 0, bots: 0, downloads: 0, signups: 0, checkouts: 0, bought: 0 });
     assert.deepEqual(empty.allTime, empty.month);
-    assert.deepEqual([empty.pages, empty.referrers, empty.systems], [[], [], []]);
+    assert.deepEqual([empty.pages, empty.referrers, empty.systems, empty.botKinds, empty.botNames], [[], [], [], [], []]);
   }));
 
 // ---- in the running server ----
@@ -213,7 +366,8 @@ test('the server counts page views, visitors and where they came from, and leave
     await until(() => totals(h.db)['visitor:'] === 1);
     assert.deepEqual(totals(h.db), { 'view:/': 1, 'visitor:': 1, 'system:Windows': 1, 'referrer:github.com': 1 });
 
-    // not counted: a crawler, a request without a browser's name, a file, a page that is not there, a HEAD
+    // a crawler and a request without a browser's name are counted as bots, by their user agent
+    // (there is no classification service in this test); a file, a page that is not there and a HEAD are not counted
     await h.request('GET', '/', as(GOOGLEBOT));
     await h.request('GET', '/');
     await h.request('GET', '/site.css', as(FIREFOX));
@@ -223,8 +377,17 @@ test('the server counts page views, visitors and where they came from, and leave
     // counted: the same visitor on another page, and somebody else
     await h.request('GET', '/login', as(FIREFOX, { referer: 'https://accounts.google.com/' }));
     await h.request('GET', '/', as(SAFARI));
-    await until(() => totals(h.db)['visitor:'] === 2);
-    assert.deepEqual(totals(h.db), { 'view:/': 2, 'view:/login': 1, 'visitor:': 2, 'system:Windows': 1, 'system:macOS': 1, 'referrer:github.com': 1 });
+    await until(() => totals(h.db)['visitor:'] === 2 && totals(h.db)['bot:crawler'] === 2);
+    assert.deepEqual(totals(h.db), {
+      'view:/': 2,
+      'view:/login': 1,
+      'visitor:': 2,
+      'system:Windows': 1,
+      'system:macOS': 1,
+      'referrer:github.com': 1,
+      'bot:crawler': 2,
+      'botname:crawler/Unclassified': 2,
+    });
 
     // nothing in the table says who it was
     const dump = JSON.stringify(h.db.all('SELECT * FROM stats_daily'));
@@ -240,6 +403,63 @@ test('behind the proxy, visitors are told apart by the address the proxy reports
     await until(() => totals(h.db)['view:/'] === 3);
     assert.equal(totals(h.db)['visitor:'], 2);
   }));
+
+test('the classifier says who a caller is, and the answer is not awaited', () => {
+  const asked = [];
+  const classify = async (address, userAgent) => {
+    asked.push(address);
+    return address === '198.51.100.9' ? { bot: true, category: 'datacenter', name: 'Hetzner', by: 'address' } : { bot: false, category: 'human', name: '' };
+  };
+  return withServer({ classify, env: { TRUST_PROXY: '1' } }, async (h) => {
+    // a browser from a hosting company's address is a program; the same browser from elsewhere is a visitor
+    assert.equal((await h.request('GET', '/', as(FIREFOX, { 'x-forwarded-for': '198.51.100.9' }))).status, 200);
+    assert.equal((await h.request('GET', '/', as(FIREFOX, { 'x-forwarded-for': '203.0.113.5' }))).status, 200);
+    await until(() => totals(h.db)['visitor:'] === 1 && totals(h.db)['bot:datacenter'] === 1);
+    assert.deepEqual(totals(h.db), { 'view:/': 1, 'visitor:': 1, 'system:Windows': 1, 'bot:datacenter': 1, 'botname:datacenter/Hetzner': 1 });
+    assert.ok(asked.length >= 2);
+  });
+});
+
+test('a classifier that throws or answers nonsense falls back to the user agent, and the answer is not waited for', () => {
+  const failing = async (address) => {
+    if (address === '198.51.100.1') throw new Error('service down');
+    return { bot: true, category: 'nonsense' };
+  };
+  return withServer({ classify: failing, env: { TRUST_PROXY: '1' } }, async (h) => {
+    await h.request('GET', '/', as(FIREFOX, { 'x-forwarded-for': '198.51.100.1' }));
+    await h.request('GET', '/', as(GOOGLEBOT, { 'x-forwarded-for': '198.51.100.2' }));
+    await until(() => totals(h.db)['visitor:'] === 1 && totals(h.db)['bot:crawler'] === 1);
+    assert.deepEqual(totals(h.db), { 'view:/': 1, 'visitor:': 1, 'system:Windows': 1, 'bot:crawler': 1, 'botname:crawler/Unclassified': 1 });
+    assert.ok(!h.logs.some((line) => line.includes('[stats] could not count')), h.logs.join('\n'));
+  });
+});
+
+test('with IPCLASS_URL the server asks the service, and its verdict is what is counted', () => {
+  const asked = [];
+  const net = {
+    fetch: async (url, init) => {
+      asked.push({ url, body: JSON.parse(init.body) });
+      return { ok: true, status: 200, json: async () => ({ bot: true, category: 'monitor', name: 'UptimeRobot', by: 'agent' }) };
+    },
+  };
+  return withServer({ env: { IPCLASS_URL: 'http://ipclass:8080' }, net }, async (h) => {
+    assert.equal((await h.request('GET', '/', as(FIREFOX))).status, 200);
+    await until(() => totals(h.db)['bot:monitor'] === 1);
+    assert.deepEqual(totals(h.db), { 'bot:monitor': 1, 'botname:monitor/UptimeRobot': 1 });
+    assert.deepEqual(asked, [{ url: 'http://ipclass:8080/classify', body: { ip: '127.0.0.1', ua: FIREFOX } }]);
+  });
+});
+
+test('a classifier that never answers does not hold up the response, and nothing is counted while it is silent', () => {
+  const silent = () => new Promise(() => {});
+  return withServer({ classify: silent }, async (h) => {
+    const started = Date.now();
+    const res = await h.request('GET', '/', as(FIREFOX));
+    assert.equal(res.status, 200);
+    assert.ok(Date.now() - started < 5000);
+    assert.deepEqual(totals(h.db), {});
+  });
+});
 
 test('the download button goes to the release on GitHub, and the click is counted', () =>
   withServer({ env: { RELEASE_REPO: 'someone/else' } }, async (h) => {
